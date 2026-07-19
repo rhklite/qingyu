@@ -14,6 +14,7 @@ struct Config: Codable {
     var playSounds: Bool
     var customVocabulary: [String] // proper nouns / jargon to bias cleanup toward
     var inputDeviceUID: String?    // pinned CoreAudio input-device UID; nil = system default
+    var showOverlay: Bool          // floating speech bar while dictating
 
     static let homeDir = FileManager.default.homeDirectoryForCurrentUser
     static let configDir = homeDir.appendingPathComponent(".config/flow")
@@ -25,14 +26,15 @@ struct Config: Codable {
             modelPath: modelsDir.appendingPathComponent("ggml-large-v3-turbo-q5_0.bin").path,
             language: "auto",
             pttKeyCode: 58,          // kVK_Option (Left Option)
-            hotkeyMode: "hold",
+            hotkeyMode: "hybrid",    // hold to talk; double-tap to lock hands-free
             cleanup: true,
             ollamaModel: "qwen2.5:3b",
             ollamaURL: "http://127.0.0.1:11434",
             injectionMode: "paste",
             playSounds: true,
             customVocabulary: [],
-            inputDeviceUID: nil
+            inputDeviceUID: nil,
+            showOverlay: true
         )
     }
 
@@ -75,5 +77,6 @@ struct Config: Codable {
         if let v = obj["playSounds"] as? Bool { playSounds = v }
         if let v = obj["customVocabulary"] as? [String] { customVocabulary = v }
         if let v = obj["inputDeviceUID"] as? String { inputDeviceUID = v }
+        if let v = obj["showOverlay"] as? Bool { showOverlay = v }
     }
 }

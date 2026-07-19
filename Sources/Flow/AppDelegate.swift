@@ -7,16 +7,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private let recorder = AudioRecorder()
     private let engine = WhisperEngine()
+    private let speechBar = SpeechBar()
     private var hotkey: HotKeyMonitor?
     private var hotkeyRetry: Timer?
 
     private enum State { case loading, idle, listening, thinking, error, noModel }
-    private var state: State = .loading { didSet { updateStatusIcon() } }
+    private var state: State = .loading { didSet { updateStatusIcon(); updateSpeechBar() } }
 
     private var recordingStart = Date.distantPast
     private var lastTranscript = ""
     private var statusMessage: String?
     private var ollamaReachable = false
+
+    // Hybrid push-to-talk state (hold to talk; double-tap to lock hands-free).
+    private var pttLocked = false
+    private var pttDownTime = Date.distantPast
+    private var lastTapTime = Date.distantPast
+    private var ignoreNextUp = false
+    private let hotkeyCapture = HotkeyCapture()
 
     // MARK: Lifecycle
 
@@ -24,6 +32,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.setActivationPolicy(.accessory)
         setupStatusItem()
         recorder.preferredDeviceUID = config.inputDeviceUID
+        recorder.onLevel = { [weak self] level in
+            Task { @MainActor in self?.speechBar.update(level: level) }
+        }
+        recorder.onError = { [weak self] error in
+            Task { @MainActor in
+                guard let self else { return }
+                self.speechBar.hide()
+                self.statusMessage = error.localizedDescription
+                self.state = .error
+                if self.config.playSounds { Cue.error() }
+                self.scheduleErrorRecovery()
+            }
+        }
 
         // Request every permission the app needs in one pass on first launch, so the
         // user can grant them all at once instead of hitting them feature by feature.
@@ -97,11 +118,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func handleHotkey(_ key: HotKeyMonitor.Key) {
-        if config.hotkeyMode == "toggle" {
+        switch config.hotkeyMode {
+        case "toggle":
             guard key == .down else { return }
             if state == .listening { stopDictation() } else { startDictation() }
-        } else {
+        case "hybrid":
+            handleHotkeyHybrid(key)
+        default:   // "hold"
             if key == .down { startDictation() } else { stopDictation() }
+        }
+    }
+
+    /// Hold to talk; double-tap to lock into hands-free (toggle), then a single press stops.
+    /// A plain hold records while held; two quick taps latch recording on until you tap again.
+    private func handleHotkeyHybrid(_ key: HotKeyMonitor.Key) {
+        let now = Date()
+        let tapThreshold = 0.28     // held shorter than this counts as a "tap", not a hold
+        let doubleTapWindow = 0.42  // max gap between taps to register a double-tap
+
+        switch key {
+        case .down:
+            if pttLocked {                       // locked hands-free → a press ends it
+                pttLocked = false
+                ignoreNextUp = true
+                stopDictation()
+                return
+            }
+            pttDownTime = now
+            if state == .idle { startDictation() }
+
+        case .up:
+            if ignoreNextUp { ignoreNextUp = false; return }
+            if pttLocked { return }
+            let held = now.timeIntervalSince(pttDownTime)
+            if held < tapThreshold {
+                // Quick tap — a second one within the window locks recording on.
+                if now.timeIntervalSince(lastTapTime) < doubleTapWindow {
+                    pttLocked = true             // stay recording, hands-free
+                    lastTapTime = .distantPast
+                    return
+                }
+                lastTapTime = now
+                stopDictation()                  // lone quick tap → usually too short → back to idle
+            } else {
+                lastTapTime = .distantPast
+                stopDictation()                  // real hold → normal push-to-talk stop
+            }
         }
     }
 
@@ -121,15 +183,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             return
         }
-        do {
-            try recorder.start()
-            recordingStart = Date()
-            statusMessage = nil
-            state = .listening
-            if config.playSounds { Cue.start() }
-        } catch {
-            statusMessage = error.localizedDescription
-            state = .error
+        if config.playSounds { Cue.start() }   // instant audio + visual feedback
+        statusMessage = nil
+        recordingStart = Date()
+        state = .listening                     // bar shows now; the mic opens in the background
+        recorder.start()
+    }
+
+    /// Transient failures (a flaky device, a whisper hiccup) must not brick the app.
+    /// Return to Ready shortly after showing the error so the next hotkey press works
+    /// and the floating bar can appear again.
+    private func scheduleErrorRecovery() {
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            guard let self, self.state == .error else { return }
+            self.statusMessage = nil
+            self.state = .idle
         }
     }
 
@@ -165,9 +234,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.lastTranscript = result
                 TextInjector.inject(result, mode: cfg.injectionMode)
             } catch {
+                NSLog("Flow: transcription failed: %@", error.localizedDescription as NSString)
                 self.statusMessage = error.localizedDescription
                 self.state = .error
                 if cfg.playSounds { Cue.error() }
+                self.scheduleErrorRecovery()
             }
         }
     }
@@ -198,6 +269,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         button.contentTintColor = tint
     }
 
+    /// The floating speech bar follows recording state: waveform while listening,
+    /// shimmer while transcribing, hidden otherwise (or when disabled in config).
+    private func updateSpeechBar() {
+        guard config.showOverlay else { speechBar.hide(); return }
+        switch state {
+        case .listening: speechBar.show(mode: .listening)
+        case .thinking:  speechBar.show(mode: .thinking)
+        default:         speechBar.hide()
+        }
+    }
+
     private var statusText: String {
         if let statusMessage { return statusMessage }
         switch state {
@@ -212,7 +294,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private var hotkeyLabel: String {
         let name = keyName(config.pttKeyCode)
-        return config.hotkeyMode == "toggle" ? "Tap \(name) to start/stop" : "Hold \(name) to talk"
+        switch config.hotkeyMode {
+        case "toggle": return "Tap \(name) to start/stop"
+        case "hybrid": return "Hold \(name) to talk · double-tap to lock"
+        default:       return "Hold \(name) to talk"
+        }
     }
 
     // Rebuild the menu each time it opens so dynamic state stays current.
@@ -229,8 +315,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             : "Off")
         addAction(cleanupTitle, to: menu, #selector(toggleCleanup))
 
-        let modeTitle = "Mode: " + (config.hotkeyMode == "toggle" ? "Toggle" : "Hold")
-        addAction(modeTitle, to: menu, #selector(toggleMode))
+        menu.addItem(modeMenuItem())
+        addAction("Change Push-to-Talk Key…", to: menu, #selector(changeHotkey))
+
+        let overlayTitle = "Floating Bar: " + (config.showOverlay ? "On" : "Off")
+        addAction(overlayTitle, to: menu, #selector(toggleOverlay))
         menu.addItem(microphoneMenuItem())
 
         if !lastTranscript.isEmpty {
@@ -273,6 +362,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                 action: nil, keyEquivalent: "")
         parent.submenu = sub
         return parent
+    }
+
+    /// A "Mode" submenu: Hold, Toggle, or the hybrid Hold + double-tap lock.
+    private func modeMenuItem() -> NSMenuItem {
+        let sub = NSMenu()
+        modeRow(sub, "Hold to talk", "hold")
+        modeRow(sub, "Toggle (tap on / off)", "toggle")
+        modeRow(sub, "Hold + double-tap to lock", "hybrid")
+        let parent = NSMenuItem(title: "Mode", action: nil, keyEquivalent: "")
+        parent.submenu = sub
+        return parent
+    }
+
+    private func modeRow(_ menu: NSMenu, _ title: String, _ value: String) {
+        let item = NSMenuItem(title: title, action: #selector(setMode(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = value
+        item.state = (config.hotkeyMode == value) ? .on : .off
+        menu.addItem(item)
     }
 
     /// A "Microphone" submenu: System Default plus every connected input device,
@@ -327,9 +435,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refreshOllamaStatus()
     }
 
-    @objc private func toggleMode() {
-        config.hotkeyMode = (config.hotkeyMode == "toggle") ? "hold" : "toggle"
+    @objc private func setMode(_ sender: NSMenuItem) {
+        guard let value = sender.representedObject as? String else { return }
+        config.hotkeyMode = value
         config.save()
+        pttLocked = false; ignoreNextUp = false   // reset hybrid state on mode change
+    }
+
+    @objc private func changeHotkey() {
+        hotkey?.stop()   // avoid the live tap firing on the current key during capture
+        hotkeyCapture.begin { [weak self] keyCode in
+            guard let self else { return }
+            if let keyCode {
+                self.config.pttKeyCode = keyCode
+                self.config.save()
+            }
+            self.startHotkey()   // rebind (new key if changed, else the old one)
+        }
+    }
+
+    @objc private func toggleOverlay() {
+        config.showOverlay.toggle()
+        config.save()
+        updateSpeechBar()
     }
 
     @objc private func selectMic(_ sender: NSMenuItem) {

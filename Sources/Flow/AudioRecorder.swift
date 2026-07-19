@@ -6,7 +6,7 @@ import AudioToolbox
 /// whisper.cpp expects. The tap runs on a real-time audio thread, so the sample
 /// buffer is guarded by a lock.
 final class AudioRecorder {
-    private let engine = AVAudioEngine()
+    private var engine = AVAudioEngine()
     private var converter: AVAudioConverter?
     private var samples: [Float] = []
     private let lock = NSLock()
@@ -20,39 +20,97 @@ final class AudioRecorder {
     /// Pinned input-device UID (from Config). nil / empty = follow the system default.
     var preferredDeviceUID: String?
 
-    func start() throws {
-        lock.lock(); samples.removeAll(keepingCapacity: true); lock.unlock()
+    /// Live input level (0…1), emitted per buffer on the audio thread for UI meters.
+    var onLevel: ((Float) -> Void)?
+    /// Called on the main queue if capture can't start (surfaces the error to the UI).
+    var onError: ((Error) -> Void)?
 
-        let input = engine.inputNode
-        applyPreferredDevice(to: input)
-        let inFormat = input.outputFormat(forBus: 0)
-        converter = AVAudioConverter(from: inFormat, to: targetFormat)
+    private let audioQueue = DispatchQueue(label: "com.local.flow.audio")
+    private var built = false
+    private var builtForUID: String?
+    private var wantRecording = false          // desired state; guarded by `lock`
 
-        input.installTap(onBus: 0, bufferSize: 4096, format: inFormat) { [weak self] buffer, _ in
-            self?.append(buffer)
+    /// Begin capturing. Non-blocking: the mic/HAL spins up on a background queue so the
+    /// UI (bar + chime) responds instantly. The audio graph is reused across recordings;
+    /// only the first use or a device change pays the rebuild cost.
+    func start() {
+        lock.lock(); samples.removeAll(keepingCapacity: true); wantRecording = true; lock.unlock()
+        let target = (preferredDeviceUID?.isEmpty == false) ? preferredDeviceUID : nil
+        audioQueue.async { [weak self] in
+            guard let self, self.isWanted() else { return }   // already released → don't open the mic
+            do {
+                try self.ensureRunning(deviceUID: target)
+            } catch {
+                guard target != nil else { self.report(error); return }
+                NSLog("Flow: pinned mic failed (%@); using system default", error.localizedDescription as NSString)
+                do { try self.ensureRunning(deviceUID: nil, forceRebuild: true) }
+                catch { self.report(error); return }
+            }
+            if !self.isWanted() { self.engine.stop() }        // released during spin-up → close now
         }
-        engine.prepare()
-        try engine.start()
     }
 
-    /// Stops capture and returns the collected 16 kHz mono samples.
+    /// Stop capturing and return the collected samples. Releases the mic immediately —
+    /// no warm-up lingering — so its indicator turns off the moment you finish speaking.
     func stop() -> [Float] {
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
-        lock.lock(); let out = samples; samples.removeAll(); lock.unlock()
+        lock.lock(); wantRecording = false; let out = samples; samples.removeAll(); lock.unlock()
+        audioQueue.async { [weak self] in self?.engine.stop() }
         return out
     }
 
-    /// Pin capture to the user-selected input device (by CoreAudio UID). Falls back
-    /// to the system default when nothing is pinned or the device is disconnected.
-    private func applyPreferredDevice(to input: AVAudioInputNode) {
-        guard let uid = preferredDeviceUID, !uid.isEmpty,
-              let devID = AudioDevices.deviceID(forUID: uid),
-              let au = input.audioUnit else { return }
-        var dev = devID
-        _ = AudioUnitSetProperty(au, kAudioOutputUnitProperty_CurrentDevice,
-                                 kAudioUnitScope_Global, 0, &dev,
-                                 UInt32(MemoryLayout<AudioDeviceID>.size))
+    private func isWanted() -> Bool { lock.lock(); defer { lock.unlock() }; return wantRecording }
+    private func report(_ error: Error) { if let onError { DispatchQueue.main.async { onError(error) } } }
+
+    /// Reuse the audio graph across recordings: the expensive rebuild (new engine +
+    /// device selection + tap install) runs only on first use or when the pinned device
+    /// changes. A warm start is just a flag flip; a cold start only restarts the HAL.
+    /// Building a fresh engine on every press was the startup-latency cause.
+    private func ensureRunning(deviceUID: String?, forceRebuild: Bool = false) throws {
+        if forceRebuild || !built || builtForUID != deviceUID {
+            try build(deviceUID: deviceUID)
+        }
+        if !engine.isRunning {
+            engine.prepare()
+            try engine.start()
+        }
+    }
+
+    private func build(deviceUID: String?) throws {
+        if built {
+            engine.stop()
+            engine.inputNode.removeTap(onBus: 0)
+        }
+        engine = AVAudioEngine()
+        let input = engine.inputNode
+
+        if let uid = deviceUID, !uid.isEmpty,
+           let devID = AudioDevices.deviceID(forUID: uid),
+           let au = input.audioUnit {
+            var dev = devID
+            let status = AudioUnitSetProperty(au, kAudioOutputUnitProperty_CurrentDevice,
+                                              kAudioUnitScope_Global, 0, &dev,
+                                              UInt32(MemoryLayout<AudioDeviceID>.size))
+            if status != noErr {
+                throw NSError(domain: "Flow.Audio", code: Int(status),
+                              userInfo: [NSLocalizedDescriptionKey: "could not select the pinned input device"])
+            }
+        }
+
+        let inFormat = input.outputFormat(forBus: 0)
+        guard inFormat.channelCount > 0, inFormat.sampleRate > 0 else {
+            throw NSError(domain: "Flow.Audio", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "input device has no usable audio format"])
+        }
+        converter = AVAudioConverter(from: inFormat, to: targetFormat)
+        // Only accumulate while a recording is actually wanted (the tap may still be
+        // installed for a moment as the engine tears down).
+        input.installTap(onBus: 0, bufferSize: 4096, format: inFormat) { [weak self] buffer, _ in
+            guard let self, self.isWanted() else { return }
+            self.append(buffer)
+        }
+        engine.prepare()
+        built = true
+        builtForUID = deviceUID
     }
 
     private func append(_ inBuffer: AVAudioPCMBuffer) {
@@ -77,5 +135,15 @@ final class AudioRecorder {
             samples.append(contentsOf: UnsafeBufferPointer(start: ch[0], count: n))
         }
         lock.unlock()
+
+        // RMS → normalized level for the floating meter. Gain maps typical speech
+        // energy into a lively 0…1 range; silence stays near zero.
+        if let onLevel, n > 0 {
+            let p = ch[0]
+            var sum: Float = 0
+            for i in 0..<n { let s = p[i]; sum += s * s }
+            let rms = (sum / Float(n)).squareRoot()
+            onLevel(min(1, rms * 8))
+        }
     }
 }

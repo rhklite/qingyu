@@ -65,6 +65,15 @@ final class HotKeyMonitor {
         }
         guard event.getIntegerValueField(.keyboardEventKeycode) == keyCode else { return }
 
+        // Ignore synthetic key events injected by other software (e.g. a Logitech mouse
+        // button remapped to Option). Real hardware presses — and virtual-HID remappers
+        // like Karabiner — report source PID 0; app-posted events carry the app's PID.
+        let sourcePID = event.getIntegerValueField(.eventSourceUnixProcessID)
+        if sourcePID != 0 {
+            NSLog("Flow: ignored synthetic PTT-key event (pid=%d)", sourcePID)
+            return
+        }
+
         switch type {
         case .flagsChanged: transition(to: modifierIsDown(event))
         case .keyDown: transition(to: true)
