@@ -1,0 +1,13 @@
+# Build output
+.build/
+*.o
+*.swiftmodule
+
+# Vendored whisper.cpp build artifacts (keep source, ignore the CMake build tree)
+third_party/whisper.cpp/build/
+
+# Models are large; download via scripts/download_model.sh
+*.bin
+
+# macOS
+.DS_Store
