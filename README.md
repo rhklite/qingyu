@@ -27,6 +27,11 @@ hold Left-⌥ ──▶ record mic ──▶ whisper.cpp (Metal) ──▶ optio
   transcript — nothing breaks.
 - **Mic pinning:** pick a specific input device (pinned by stable CoreAudio UID, so it
   survives reboots / re-plugging), or follow the system default.
+- **Multilingual:** whisper detects the language per utterance. You can pin one, or pick
+  a **subset** (e.g. English + 中文) so detection only ever chooses among those — no more
+  short/quiet clips wandering off to the wrong language.
+- **Audio boost:** quiet / far-from-mic utterances are normalized to a consistent
+  loudness (peak-limited, never clips) before transcription, improving accuracy.
 - **Injection:** clipboard + synthetic ⌘V (fast), or Unicode typing (leaves the
   clipboard untouched).
 
@@ -88,9 +93,10 @@ and Flow falls back to whisper's raw output.
 
 Mic icon in the menu bar → status, hotkey hint, and:
 
-- **LLM Cleanup** on/off · **Mode** (Hold / Toggle / Hold + double-tap lock) ·
-  **Floating Bar** on/off
+- **LLM Cleanup** on/off · **Boost Quiet Audio** on/off · **Mode** (Hold / Toggle /
+  Hold + double-tap lock) · **Floating Bar** on/off
 - **Microphone ▸** — System Default or any connected input (pinned by UID)
+- **Language ▸** — Auto-detect, or toggle a subset to detect only among those
 - **Change Push-to-Talk Key…** — press the key you want to bind
 - **Permissions ▸** · **Open Config Folder** · **Copy Last Transcript**
 
@@ -102,6 +108,8 @@ Mic icon in the menu bar → status, hotkey hint, and:
 |---|---|---|
 | `modelPath` | `…/models/ggml-large-v3-turbo-q5_0.bin` | any whisper.cpp GGML model |
 | `language` | `auto` | `auto` detects; or `en`, `ja`, `zh`, … |
+| `detectLanguages` | `[]` | restrict detection to these codes, e.g. `["en","zh"]`; `[]` = all |
+| `boostAudio` | `true` | normalize quiet / far-mic audio before transcription |
 | `pttKeyCode` | `58` | Left-⌥. 61=Right-⌥, 59=Left-⌃, 62=Right-⌃, 55=Left-⌘ |
 | `hotkeyMode` | `hybrid` | `hybrid` (hold + double-tap lock), `hold`, or `toggle` |
 | `inputDeviceUID` | *(unset)* | pinned mic UID; unset = system default |

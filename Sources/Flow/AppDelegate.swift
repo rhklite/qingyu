@@ -215,11 +215,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         state = .thinking
         let cfg = config
+        let audio = cfg.boostAudio ? AudioRecorder.normalizedForRecognition(samples) : samples
         Task { [weak self] in
             guard let self else { return }
             do {
                 let raw = try await self.engine.transcribe(
-                    samples: samples, language: cfg.language, vocabulary: cfg.customVocabulary)
+                    samples: audio, language: cfg.language,
+                    detectLanguages: cfg.detectLanguages, vocabulary: cfg.customVocabulary)
 
                 var result = raw
                 if cfg.cleanup, !raw.isEmpty {
@@ -314,6 +316,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             ? (ollamaReachable ? "On" : "On (Ollama offline)")
             : "Off")
         addAction(cleanupTitle, to: menu, #selector(toggleCleanup))
+        addAction("Boost Quiet Audio: " + (config.boostAudio ? "On" : "Off"), to: menu, #selector(toggleBoost))
 
         menu.addItem(modeMenuItem())
         addAction("Change Push-to-Talk Key…", to: menu, #selector(changeHotkey))
@@ -321,6 +324,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let overlayTitle = "Floating Bar: " + (config.showOverlay ? "On" : "Off")
         addAction(overlayTitle, to: menu, #selector(toggleOverlay))
         menu.addItem(microphoneMenuItem())
+        menu.addItem(languageMenuItem())
 
         if !lastTranscript.isEmpty {
             addAction("Copy Last Transcript", to: menu, #selector(copyLast))
@@ -383,6 +387,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item)
     }
 
+    private static let languages: [(code: String, label: String)] = [
+        ("auto", "Auto-detect"), ("en", "English"), ("zh", "中文"), ("ja", "日本語"),
+        ("ko", "한국어"), ("es", "Español"), ("fr", "Français"), ("de", "Deutsch"),
+    ]
+
+    /// A "Language" submenu. Toggle languages to build a detection set: 0 = detect among
+    /// all, 1 = pin, 2+ = detect only among those (kills mis-detection on short/mixed clips).
+    private func languageMenuItem() -> NSMenuItem {
+        let sub = NSMenu()
+        let set = config.detectLanguages
+
+        let auto = NSMenuItem(title: "Auto-detect (all)", action: #selector(setAutoLanguage), keyEquivalent: "")
+        auto.target = self
+        auto.state = set.isEmpty ? .on : .off
+        sub.addItem(auto)
+        sub.addItem(.separator())
+
+        for lang in Self.languages where lang.code != "auto" {
+            let item = NSMenuItem(title: lang.label, action: #selector(toggleLanguage(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = lang.code
+            item.state = set.contains(lang.code) ? .on : .off
+            sub.addItem(item)
+        }
+
+        sub.addItem(.separator())
+        let hint: String
+        switch set.count {
+        case 0:  hint = "Detecting: all languages"
+        case 1:  hint = "Pinned to \(languageLabel(set[0]))"
+        default: hint = "Detecting only: " + set.map(languageLabel).joined(separator: ", ")
+        }
+        sub.addItem(disabled(hint))
+
+        let parent = NSMenuItem(title: "Language", action: nil, keyEquivalent: "")
+        parent.submenu = sub
+        return parent
+    }
+
+    private func languageLabel(_ code: String) -> String {
+        Self.languages.first { $0.code == code }?.label ?? code
+    }
+
     /// A "Microphone" submenu: System Default plus every connected input device,
     /// with a checkmark on the pinned one. Pinning persists by UID (config.inputDeviceUID).
     private func microphoneMenuItem() -> NSMenuItem {
@@ -435,6 +482,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refreshOllamaStatus()
     }
 
+    @objc private func toggleBoost() {
+        config.boostAudio.toggle()
+        config.save()
+    }
+
     @objc private func setMode(_ sender: NSMenuItem) {
         guard let value = sender.representedObject as? String else { return }
         config.hotkeyMode = value
@@ -465,6 +517,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         config.inputDeviceUID = uid.isEmpty ? nil : uid
         config.save()
         recorder.preferredDeviceUID = config.inputDeviceUID   // applies on next recording
+    }
+
+    @objc private func setAutoLanguage() {
+        config.detectLanguages = []
+        config.language = "auto"
+        config.save()
+    }
+
+    @objc private func toggleLanguage(_ sender: NSMenuItem) {
+        guard let code = sender.representedObject as? String else { return }
+        var set = config.detectLanguages
+        if let i = set.firstIndex(of: code) { set.remove(at: i) } else { set.append(code) }
+        config.detectLanguages = set
+        config.language = (set.count == 1) ? set[0] : "auto"   // keep `language` coherent
+        config.save()   // applies on the next dictation
     }
 
     @objc private func copyLast() {

@@ -15,6 +15,8 @@ struct Config: Codable {
     var customVocabulary: [String] // proper nouns / jargon to bias cleanup toward
     var inputDeviceUID: String?    // pinned CoreAudio input-device UID; nil = system default
     var showOverlay: Bool          // floating speech bar while dictating
+    var boostAudio: Bool           // normalize quiet/far-mic audio before transcription
+    var detectLanguages: [String]  // restrict detection to these whisper codes; [] = all
 
     static let homeDir = FileManager.default.homeDirectoryForCurrentUser
     static let configDir = homeDir.appendingPathComponent(".config/flow")
@@ -34,7 +36,9 @@ struct Config: Codable {
             playSounds: true,
             customVocabulary: [],
             inputDeviceUID: nil,
-            showOverlay: true
+            showOverlay: true,
+            boostAudio: true,
+            detectLanguages: []
         )
     }
 
@@ -78,5 +82,7 @@ struct Config: Codable {
         if let v = obj["customVocabulary"] as? [String] { customVocabulary = v }
         if let v = obj["inputDeviceUID"] as? String { inputDeviceUID = v }
         if let v = obj["showOverlay"] as? Bool { showOverlay = v }
+        if let v = obj["boostAudio"] as? Bool { boostAudio = v }
+        if let v = obj["detectLanguages"] as? [String] { detectLanguages = v }
     }
 }

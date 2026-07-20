@@ -58,6 +58,25 @@ final class AudioRecorder {
         return out
     }
 
+    /// Boost a quiet / far-from-mic utterance to a consistent loudness for whisper
+    /// (RMS gain with a peak limiter so it never clips). Only amplifies — never reduces —
+    /// so already-loud speech is left alone and background noise isn't over-amplified.
+    static func normalizedForRecognition(_ samples: [Float]) -> [Float] {
+        guard !samples.isEmpty else { return samples }
+        var sumSq: Float = 0, peak: Float = 0
+        for s in samples { sumSq += s * s; peak = Swift.max(peak, abs(s)) }
+        let rms = (sumSq / Float(samples.count)).squareRoot()
+        guard rms > 1e-5, peak > 0 else { return samples }   // silence → leave untouched
+
+        let targetRMS: Float = 0.12
+        var gain = targetRMS / rms
+        gain = Swift.min(gain, 0.97 / peak)   // peak limiter — never clip
+        gain = Swift.min(gain, 8.0)           // cap at ~+18 dB so faint noise isn't blown up
+        gain = Swift.max(gain, 1.0)           // boost-only
+        guard gain > 1.02 else { return samples }
+        return samples.map { $0 * gain }
+    }
+
     private func isWanted() -> Bool { lock.lock(); defer { lock.unlock() }; return wantRecording }
     private func report(_ error: Error) { if let onError { DispatchQueue.main.async { onError(error) } } }
 
