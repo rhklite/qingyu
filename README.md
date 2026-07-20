@@ -44,15 +44,15 @@ The large models are **not** in the repo (GitHub size limits) — the scripts fe
 ./scripts/build_whisper.sh      # build whisper.cpp static libs (once, ~2 min)
 ./scripts/download_model.sh     # fetch ggml-large-v3-turbo-q5_0.bin (~547 MB → ~/.config/qingyu/models)
 ./scripts/setup_signing.sh      # one-time: stable self-signed identity so TCC grants persist
-./scripts/build.sh              # compile + bundle the app, then launch it:
-open "$HOME/Library/Application Support/Qingyu/Qingyu.app"
+./scripts/build.sh              # compile + install 轻语.app into /Applications, then:
+open "/Applications/轻语.app"    # or double-click 轻语 in Finder / Launchpad
 ```
 
-> **Build location:** the `.app` is assembled under `~/Library/Application Support/Qingyu`,
-> not inside the repo. If the project lives in a cloud-synced folder (iCloud/Dropbox),
-> the file-provider re-tags `.app` bundles with `com.apple.FinderInfo` and codesign
-> fails with "resource fork … not allowed"; `~/Library` is never synced. Override with
-> `QINGYU_APP_DIR`.
+> **Install location:** `build.sh` installs `轻语.app` into `/Applications` (falling back
+> to `~/Applications` if that needs admin) — both outside iCloud/Dropbox sync. That
+> matters: in a synced folder like `~/Documents`, the file-provider re-tags `.app`
+> bundles with `com.apple.FinderInfo` and codesign fails with "resource fork … not
+> allowed". Override the location with `QINGYU_APP_DIR`.
 >
 > **Signing:** `setup_signing.sh` creates a self-signed code-signing cert in a dedicated
 > keychain. Ad-hoc signatures change every rebuild, so macOS forgets your Microphone /

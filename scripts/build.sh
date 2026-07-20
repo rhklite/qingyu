@@ -11,13 +11,15 @@ ROOT="$(pwd)"
 WHISPER="$ROOT/third_party/whisper.cpp"
 BUILD="$WHISPER/build"
 OUT="$ROOT/.build"
-# Assemble the .app OUTSIDE the project when the project sits in a cloud-synced folder
-# (iCloud/Dropbox/etc.). Their file-provider re-tags .app bundles with com.apple.FinderInfo
-# faster than we can strip it, which makes codesign fail with "resource fork ... not
-# allowed". ~/Library/Application Support is never synced. Override with QINGYU_APP_DIR.
-APP_DIR="${QINGYU_APP_DIR:-$HOME/Library/Application Support/Qingyu}"
-APP="$APP_DIR/Qingyu.app"
+# Install into /Applications so it's a normal double-click app; fall back to
+# ~/Applications if /Applications needs admin. Both live outside iCloud/Dropbox sync,
+# so the file-provider "resource fork ... not allowed" codesign failure — which hits
+# when the .app sits in a synced folder like ~/Documents — doesn't apply here.
+# Override the location with QINGYU_APP_DIR.
+APP_DIR="${QINGYU_APP_DIR:-/Applications}"
+[ -w "$APP_DIR" ] || APP_DIR="$HOME/Applications"
 mkdir -p "$APP_DIR"
+APP="$APP_DIR/轻语.app"
 
 if [[ ! -f "$BUILD/src/libwhisper.a" ]]; then
     echo "whisper.cpp not built. Run scripts/build_whisper.sh first." >&2
