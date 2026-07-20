@@ -35,18 +35,33 @@ hold Left-⌥ ──▶ record mic ──▶ whisper.cpp (Metal) ──▶ optio
 - **Injection:** clipboard + synthetic ⌘V (fast), or Unicode typing (leaves the
   clipboard untouched).
 
-## Build
+## Install
 
 Requires: Apple Silicon, Xcode Command Line Tools, CMake (`brew install cmake`).
-The large models are **not** in the repo (GitHub size limits) — the scripts fetch them.
+The large models aren't in the repo (GitHub size limits) — setup fetches them.
+
+**Easiest — guided GUI.** Double-click **`Install 轻语.app`** in the project folder. It
+asks whether you want LLM cleanup, then builds everything, downloads the speech model,
+and installs `轻语.app` into /Applications (progress shows in a Terminal window).
+
+**Or one command:**
 
 ```bash
-./scripts/build_whisper.sh      # build whisper.cpp static libs (once, ~2 min)
-./scripts/download_model.sh     # fetch ggml-large-v3-turbo-q5_0.bin (~547 MB → ~/.config/qingyu/models)
-./scripts/setup_signing.sh      # one-time: stable self-signed identity so TCC grants persist
-./scripts/build.sh              # compile + install 轻语.app into /Applications, then:
+./scripts/install.sh            # build + install, download the model, ask about LLM cleanup
+```
+
+**Or step by step:**
+
+```bash
+./scripts/build_whisper.sh      # whisper.cpp static libs (once, ~2 min)
+./scripts/download_model.sh     # ggml-large-v3-turbo-q5_0.bin (~547 MB → ~/.config/qingyu/models)
+./scripts/setup_signing.sh      # stable self-signed identity so TCC grants persist
+./scripts/build.sh              # compile + install 轻语.app into /Applications
 open "/Applications/轻语.app"    # or double-click 轻语 in Finder / Launchpad
 ```
+
+`install.sh` also handles optional LLM cleanup (Ollama + qwen2.5:3b) — set `QINGYU_LLM=1`
+or `0` to skip the prompt. Regenerate the GUI installer with `./scripts/build_installer.sh`.
 
 > **Install location:** `build.sh` installs `轻语.app` into `/Applications` (falling back
 > to `~/Applications` if that needs admin) — both outside iCloud/Dropbox sync. That

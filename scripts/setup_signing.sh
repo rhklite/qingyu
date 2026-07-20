@@ -19,8 +19,10 @@ CERT_PW="qingyu"
 OPENSSL="/opt/homebrew/opt/openssl@3/bin/openssl"
 [ -x "$OPENSSL" ] || OPENSSL="$(command -v openssl)"
 
-# Already set up? Nothing to do.
-if security find-identity -v -p codesigning 2>/dev/null | grep -q "$IDENTITY"; then
+# Already set up? Nothing to do. (Check the keychain WITHOUT -v: a self-signed cert is
+# untrusted, so `-v` hides it and we'd create a duplicate every run → codesign then
+# fails with "ambiguous (matches … and …)".)
+if security find-identity "$KC" 2>/dev/null | grep -q "$IDENTITY"; then
     echo "Signing identity '$IDENTITY' already present."
     exit 0
 fi
