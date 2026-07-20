@@ -1,7 +1,7 @@
 import Cocoa
 
 @main
-enum FlowApp {
+enum QingyuApp {
     @MainActor
     static func main() {
         let app = NSApplication.shared

@@ -1,4 +1,4 @@
-# Flow
+# 轻语 (Qingyu)
 
 A personal, local-first dictation app for macOS — your own Wispr Flow. Hold a key,
 talk, and the cleaned-up text is pasted into whatever app has focus. Everything runs
@@ -42,17 +42,17 @@ The large models are **not** in the repo (GitHub size limits) — the scripts fe
 
 ```bash
 ./scripts/build_whisper.sh      # build whisper.cpp static libs (once, ~2 min)
-./scripts/download_model.sh     # fetch ggml-large-v3-turbo-q5_0.bin (~547 MB → ~/.config/flow/models)
+./scripts/download_model.sh     # fetch ggml-large-v3-turbo-q5_0.bin (~547 MB → ~/.config/qingyu/models)
 ./scripts/setup_signing.sh      # one-time: stable self-signed identity so TCC grants persist
 ./scripts/build.sh              # compile + bundle the app, then launch it:
-open "$HOME/Library/Application Support/Flow/Flow.app"
+open "$HOME/Library/Application Support/Qingyu/Qingyu.app"
 ```
 
-> **Build location:** the `.app` is assembled under `~/Library/Application Support/Flow`,
+> **Build location:** the `.app` is assembled under `~/Library/Application Support/Qingyu`,
 > not inside the repo. If the project lives in a cloud-synced folder (iCloud/Dropbox),
 > the file-provider re-tags `.app` bundles with `com.apple.FinderInfo` and codesign
 > fails with "resource fork … not allowed"; `~/Library` is never synced. Override with
-> `FLOW_APP_DIR`.
+> `QINGYU_APP_DIR`.
 >
 > **Signing:** `setup_signing.sh` creates a self-signed code-signing cert in a dedicated
 > keychain. Ad-hoc signatures change every rebuild, so macOS forgets your Microphone /
@@ -65,7 +65,7 @@ open "$HOME/Library/Application Support/Flow/Flow.app"
 
 ## First-run permissions
 
-On first launch Flow requests everything in one pass. Grant in System Settings →
+On first launch 轻语 requests everything in one pass. Grant in System Settings →
 Privacy & Security (the menu's **Permissions ▸** submenu shows live ✓/✗ and jumps to
 each pane; **Request All Permissions…** re-fires the prompts):
 
@@ -75,7 +75,7 @@ each pane; **Request All Permissions…** re-fires the prompts):
 | **Accessibility** | paste text, and satisfy the global-hotkey event tap |
 | **Input Monitoring** | alternative to Accessibility for the hotkey tap |
 
-Accessibility alone is enough for the hotkey *and* pasting, so Flow often never needs a
+Accessibility alone is enough for the hotkey *and* pasting, so 轻语 often never needs a
 separate Input Monitoring toggle. After granting, the hotkey arms itself within 2s.
 
 ## Optional: LLM cleanup
@@ -87,7 +87,7 @@ ollama pull qwen2.5:3b       # matches ollamaModel in config (~1.9 GB, managed b
 ```
 
 Toggle cleanup from the menu. With Ollama offline the menu shows "On (Ollama offline)"
-and Flow falls back to whisper's raw output.
+and 轻语 falls back to whisper's raw output.
 
 ## Menu
 
@@ -102,7 +102,7 @@ Mic icon in the menu bar → status, hotkey hint, and:
 
 ## Configuration
 
-`~/.config/flow/config.json`:
+`~/.config/qingyu/config.json`:
 
 | Key | Default | Notes |
 |---|---|---|
@@ -127,7 +127,7 @@ You can also set it live via **Change Push-to-Talk Key…**.
 ## Layout
 
 ```
-Sources/Flow/           Swift app: menu bar, audio capture, whisper, hotkey,
+Sources/Qingyu/           Swift app: menu bar, audio capture, whisper, hotkey,
                         cleanup, injection, floating bar, permissions, key capture
 Sources/CWhisper/       C-interop module map exposing whisper.h to Swift
 Resources/              Info.plist, entitlements

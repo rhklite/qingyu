@@ -1,6 +1,6 @@
 import Cocoa
 
-/// A small floating "speech bar" (like Wispr Flow): a translucent pill that appears
+/// A small floating "speech bar": a translucent pill that appears
 /// at the bottom of the screen while you dictate, with a status dot and a waveform
 /// meter that reacts to your voice, then a traveling shimmer while the transcript is
 /// being processed. It's a non-activating panel with mouse events disabled, so it

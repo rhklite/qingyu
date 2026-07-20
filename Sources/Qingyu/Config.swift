@@ -19,7 +19,7 @@ struct Config: Codable {
     var detectLanguages: [String]  // restrict detection to these whisper codes; [] = all
 
     static let homeDir = FileManager.default.homeDirectoryForCurrentUser
-    static let configDir = homeDir.appendingPathComponent(".config/flow")
+    static let configDir = homeDir.appendingPathComponent(".config/qingyu")
     static let modelsDir = configDir.appendingPathComponent("models")
     static let configFile = configDir.appendingPathComponent("config.json")
 

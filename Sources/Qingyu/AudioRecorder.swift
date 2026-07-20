@@ -42,7 +42,7 @@ final class AudioRecorder {
                 try self.ensureRunning(deviceUID: target)
             } catch {
                 guard target != nil else { self.report(error); return }
-                NSLog("Flow: pinned mic failed (%@); using system default", error.localizedDescription as NSString)
+                NSLog("Qingyu: pinned mic failed (%@); using system default", error.localizedDescription as NSString)
                 do { try self.ensureRunning(deviceUID: nil, forceRebuild: true) }
                 catch { self.report(error); return }
             }
@@ -110,14 +110,14 @@ final class AudioRecorder {
                                               kAudioUnitScope_Global, 0, &dev,
                                               UInt32(MemoryLayout<AudioDeviceID>.size))
             if status != noErr {
-                throw NSError(domain: "Flow.Audio", code: Int(status),
+                throw NSError(domain: "Qingyu.Audio", code: Int(status),
                               userInfo: [NSLocalizedDescriptionKey: "could not select the pinned input device"])
             }
         }
 
         let inFormat = input.outputFormat(forBus: 0)
         guard inFormat.channelCount > 0, inFormat.sampleRate > 0 else {
-            throw NSError(domain: "Flow.Audio", code: -1,
+            throw NSError(domain: "Qingyu.Audio", code: -1,
                           userInfo: [NSLocalizedDescriptionKey: "input device has no usable audio format"])
         }
         converter = AVAudioConverter(from: inFormat, to: targetFormat)

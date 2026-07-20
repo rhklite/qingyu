@@ -94,7 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             Task { @MainActor in self?.handleHotkey(key) }
         }
         // Always ATTEMPT the tap. When Input Monitoring isn't granted the attempt
-        // fails, but the attempt itself is what registers Flow in the Input Monitoring
+        // fails, but the attempt itself is what registers Qingyu in the Input Monitoring
         // list and fires the system prompt — so we must try even while unauthorized.
         if monitor.start() {
             hotkey = monitor
@@ -103,7 +103,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             // Tap failed → neither Accessibility nor Input Monitoring is granted yet.
             // (Accessibility alone satisfies a listen tap; Input Monitoring is an
-            // alternative.) The attempt registers Flow and fires the prompt.
+            // alternative.) The attempt registers Qingyu and fires the prompt.
             if hotkeyRetry == nil { Permissions.ensureInputMonitoring(prompt: true) }
             scheduleHotkeyRetry()
         }
@@ -236,7 +236,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.lastTranscript = result
                 TextInjector.inject(result, mode: cfg.injectionMode)
             } catch {
-                NSLog("Flow: transcription failed: %@", error.localizedDescription as NSString)
+                NSLog("Qingyu: transcription failed: %@", error.localizedDescription as NSString)
                 self.statusMessage = error.localizedDescription
                 self.state = .error
                 if cfg.playSounds { Cue.error() }
@@ -308,7 +308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refreshOllamaStatus()
         menu.removeAllItems()
 
-        menu.addItem(disabled("Flow — \(statusText)"))
+        menu.addItem(disabled("轻语 — \(statusText)"))
         menu.addItem(disabled(hotkeyLabel))
         menu.addItem(.separator())
 
@@ -337,7 +337,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         addAction("Open Config Folder", to: menu, #selector(openConfigFolder))
         menu.addItem(permissionsMenuItem())
         menu.addItem(.separator())
-        addAction("Quit Flow", to: menu, #selector(quit))
+        addAction("Quit 轻语", to: menu, #selector(quit))
     }
 
     private func disabled(_ title: String) -> NSMenuItem {
@@ -547,18 +547,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let alert = NSAlert()
         alert.messageText = "Download a Whisper model"
         alert.informativeText = """
-        Flow needs a whisper.cpp GGML model. Either run
+        轻语 needs a whisper.cpp GGML model. Either run
 
             ./scripts/download_model.sh
 
-        from the Flow repo, or download a model (e.g.
+        from the 轻语 repo, or download a model (e.g.
         ggml-large-v3-turbo-q5_0.bin from Hugging Face:
         ggerganov/whisper.cpp) into:
 
             \(Config.modelsDir.path)
 
         Then choose “Reload Model”. config.json → modelPath controls
-        which file Flow loads.
+        which file 轻语 loads.
         """
         alert.addButton(withTitle: "Open Models Folder")
         alert.addButton(withTitle: "Reload Model")

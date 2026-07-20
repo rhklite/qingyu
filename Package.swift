@@ -18,16 +18,16 @@ let staticLibs = [
 ].map { buildDir + $0 }
 
 let package = Package(
-    name: "Flow",
+    name: "Qingyu",
     platforms: [.macOS(.v13)],
     products: [
-        .executable(name: "Flow", targets: ["Flow"]),
+        .executable(name: "Qingyu", targets: ["Qingyu"]),
     ],
     targets: [
         // Header-only module exposing whisper.cpp's C API to Swift.
         .systemLibrary(name: "CWhisper", path: "Sources/CWhisper"),
         .executableTarget(
-            name: "Flow",
+            name: "Qingyu",
             dependencies: ["CWhisper"],
             linkerSettings: [
                 .unsafeFlags(staticLibs),

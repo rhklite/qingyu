@@ -70,7 +70,7 @@ final class HotKeyMonitor {
         // like Karabiner — report source PID 0; app-posted events carry the app's PID.
         let sourcePID = event.getIntegerValueField(.eventSourceUnixProcessID)
         if sourcePID != 0 {
-            NSLog("Flow: ignored synthetic PTT-key event (pid=%d)", sourcePID)
+            NSLog("Qingyu: ignored synthetic PTT-key event (pid=%d)", sourcePID)
             return
         }
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds Flow.app directly with swiftc.
+# Builds Qingyu.app directly with swiftc.
 #
 # We bypass `swift build` because some Command Line Tools installs ship a broken
 # SwiftPM ManifestAPI (link error on PackageDescription.Package.init). Package.swift
@@ -14,9 +14,9 @@ OUT="$ROOT/.build"
 # Assemble the .app OUTSIDE the project when the project sits in a cloud-synced folder
 # (iCloud/Dropbox/etc.). Their file-provider re-tags .app bundles with com.apple.FinderInfo
 # faster than we can strip it, which makes codesign fail with "resource fork ... not
-# allowed". ~/Library/Application Support is never synced. Override with FLOW_APP_DIR.
-APP_DIR="${FLOW_APP_DIR:-$HOME/Library/Application Support/Flow}"
-APP="$APP_DIR/Flow.app"
+# allowed". ~/Library/Application Support is never synced. Override with QINGYU_APP_DIR.
+APP_DIR="${QINGYU_APP_DIR:-$HOME/Library/Application Support/Qingyu}"
+APP="$APP_DIR/Qingyu.app"
 mkdir -p "$APP_DIR"
 
 if [[ ! -f "$BUILD/src/libwhisper.a" ]]; then
@@ -36,7 +36,7 @@ STATIC_LIBS=(
     "$BUILD/ggml/src/libggml-base.a"
 )
 
-echo "Compiling Flow..."
+echo "Compiling Qingyu..."
 swiftc \
     -O \
     -parse-as-library \
@@ -45,31 +45,31 @@ swiftc \
     -Xcc -I"$ROOT/Sources/CWhisper" \
     -Xcc -I"$ROOT/Sources/CWhisper/include" \
     -Xcc -fmodule-map-file="$ROOT/Sources/CWhisper/module.modulemap" \
-    "$ROOT"/Sources/Flow/*.swift \
+    "$ROOT"/Sources/Qingyu/*.swift \
     "${STATIC_LIBS[@]}" \
     -lc++ \
     -framework Metal -framework MetalKit -framework Accelerate \
     -framework AppKit -framework AVFoundation -framework CoreGraphics \
     -framework ApplicationServices \
-    -o "$OUT/Flow"
+    -o "$OUT/Qingyu"
 
 echo "Assembling $APP..."
 # A running instance holds the bundle open; if we rm/sign over it, codesign fails
 # with "resource fork ... not allowed". Stop it and wait briefly for the lock to drop.
-pkill -x Flow 2>/dev/null || true
-for _ in 1 2 3 4 5; do pgrep -x Flow >/dev/null || break; sleep 0.3; done
+pkill -x Qingyu 2>/dev/null || true
+for _ in 1 2 3 4 5; do pgrep -x Qingyu >/dev/null || break; sleep 0.3; done
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$OUT/Flow" "$APP/Contents/MacOS/Flow"
+cp "$OUT/Qingyu" "$APP/Contents/MacOS/Qingyu"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 
 # Prefer the stable self-signed identity (scripts/setup_signing.sh) so TCC
 # permissions survive rebuilds. Fall back to ad-hoc if it isn't set up.
-SIGN_ID="Flow Local Dev"
-SIGN_KC="$HOME/Library/Keychains/flow-signing.keychain-db"
+SIGN_ID="Qingyu Local Dev"
+SIGN_KC="$HOME/Library/Keychains/qingyu-signing.keychain-db"
 if security find-identity "$SIGN_KC" 2>/dev/null | grep -q "$SIGN_ID"; then
     echo "Signing with stable identity '$SIGN_ID'..."
-    security unlock-keychain -p "flow-local-signing" "$SIGN_KC" 2>/dev/null || true
+    security unlock-keychain -p "qingyu-local-signing" "$SIGN_KC" 2>/dev/null || true
     SIGN_ARGS=(--sign "$SIGN_ID" --keychain "$SIGN_KC")
 else
     echo "Ad-hoc signing (run scripts/setup_signing.sh for persistent permissions)..."
@@ -83,13 +83,13 @@ signed=false
 for _ in 1 2 3 4 5; do
     xattr -cr "$APP" 2>/dev/null || true
     if codesign --force --deep "${SIGN_ARGS[@]}" \
-        --entitlements "$ROOT/Resources/Flow.entitlements" "$APP" 2>/tmp/flow-codesign.err; then
+        --entitlements "$ROOT/Resources/Qingyu.entitlements" "$APP" 2>/tmp/qingyu-codesign.err; then
         signed=true; break
     fi
     sleep 0.4
 done
 if [[ "$signed" != true ]]; then
-    echo "codesign failed after retries:" >&2; cat /tmp/flow-codesign.err >&2; exit 1
+    echo "codesign failed after retries:" >&2; cat /tmp/qingyu-codesign.err >&2; exit 1
 fi
 codesign --verify --strict "$APP" || { echo "signature verify failed" >&2; exit 1; }
 

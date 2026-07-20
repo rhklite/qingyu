@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Create a STABLE self-signed code-signing identity for Flow.
+# Create a STABLE self-signed code-signing identity for Qingyu.
 #
 # Why: ad-hoc signatures (`codesign -s -`) change their cdhash on every rebuild,
 # so macOS treats each build as a brand-new app and forgets every TCC permission
@@ -11,10 +11,10 @@
 # not a secret worth protecting) so the build can sign non-interactively.
 set -euo pipefail
 
-IDENTITY="Flow Local Dev"
-KC="$HOME/Library/Keychains/flow-signing.keychain-db"
-KC_PW="flow-local-signing"
-CERT_PW="flow"
+IDENTITY="Qingyu Local Dev"
+KC="$HOME/Library/Keychains/qingyu-signing.keychain-db"
+KC_PW="qingyu-local-signing"
+CERT_PW="qingyu"
 
 OPENSSL="/opt/homebrew/opt/openssl@3/bin/openssl"
 [ -x "$OPENSSL" ] || OPENSSL="$(command -v openssl)"
