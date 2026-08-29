@@ -2,29 +2,39 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key>
-    <string>Qingyu</string>
-    <key>CFBundleDisplayName</key>
-    <string>轻语</string>
-    <key>CFBundleIdentifier</key>
-    <string>com.local.qingyu</string>
-    <key>CFBundleExecutable</key>
-    <string>Qingyu</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
-    <key>CFBundleVersion</key>
-    <string>1</string>
-    <key>CFBundleInfoDictionaryVersion</key>
-    <string>6.0</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>13.0</string>
-    <key>LSUIElement</key>
-    <true/>
-    <key>NSMicrophoneUsageDescription</key>
-    <string>轻语 records your voice to transcribe it into text.</string>
-    <key>NSHumanReadableCopyright</key>
-    <string>Personal build.</string>
+	<key>CFBundleDisplayName</key>
+	<string>轻语</string>
+	<key>CFBundleExecutable</key>
+	<string>Qingyu</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.local.qingyu</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Qingyu</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.3.0</string>
+	<key>CFBundleVersion</key>
+	<string>4</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>轻语 reads system audio levels so it can quieten other audio while you dictate.</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Personal build.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>轻语 records your voice to transcribe it into text.</string>
+	<key>SUEnableInstallerLauncherService</key>
+	<false/>
+	<key>SUFeedURL</key>
+	<string>https://github.com/rhklite/qingyu/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>LPjnjxWWq7rHtFwnFcOFvVosQRhTFbbqTxIt86/8fM4=</string>
 </dict>
 </plist>

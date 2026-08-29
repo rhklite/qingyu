@@ -15,8 +15,15 @@ cd "$(dirname "$0")/.."
 say() { printf '\n\033[1m== %s ==\033[0m\n' "$1"; }
 
 say "轻语 (Qingyu) setup"
-[[ "$(uname -m)" == "arm64" ]] || echo "Warning: this build targets Apple Silicon (arm64)." >&2
 command -v cmake >/dev/null || { echo "CMake required — install it first: brew install cmake" >&2; exit 1; }
+
+# Build only for this Mac. The universal (arm64 + x86_64) build is for handing the app
+# to someone else — see scripts/makedmg.sh.
+export QINGYU_ARCHS="${QINGYU_ARCHS:-$(uname -m)}"
+if [[ "$QINGYU_ARCHS" == "x86_64" ]]; then
+    echo "Intel Mac: transcription will run on the CPU (no Metal). A smaller model is" >&2
+    echo "much snappier here — consider QINGYU_WHISPER_MODEL=medium-q5_0." >&2
+fi
 
 MODEL="${QINGYU_WHISPER_MODEL:-large-v3-turbo-q5_0}"
 OLLAMA_MODEL="${QINGYU_OLLAMA_MODEL:-qwen2.5:3b}"
@@ -37,7 +44,7 @@ if [[ "$want_llm" == "1" ]] && ! command -v brew >/dev/null; then
 fi
 
 # --- whisper.cpp static libraries --------------------------------------------------
-if [[ ! -f third_party/whisper.cpp/build/src/libwhisper.a ]]; then
+if [[ ! -f "third_party/whisper.cpp/build-$QINGYU_ARCHS/src/libwhisper.a" ]]; then
     if [[ ! -f third_party/whisper.cpp/CMakeLists.txt ]]; then
         say "Cloning whisper.cpp"
         git clone --depth 1 https://github.com/ggml-org/whisper.cpp third_party/whisper.cpp

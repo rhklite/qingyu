@@ -7,20 +7,22 @@ import Foundation
 struct LLMCleaner {
     let baseURL: String
     let model: String
+    let level: CleanupLevel
 
-    func cleanup(_ text: String, vocabulary: [String]) async -> String? {
-        guard let url = URL(string: baseURL + "/api/generate") else { return nil }
+    func cleanup(_ text: String, vocabulary: [String], spokenPunctuation: Bool) async -> String? {
+        guard let instruction = level.prompt,
+              let url = URL(string: baseURL + "/api/generate") else { return nil }
 
-        var prompt = """
-        You are a dictation post-processor. Rewrite the raw speech-to-text \
-        transcript below into clean written text. Fix punctuation and \
-        capitalization; remove filler words (um, uh, like, you know) and false \
-        starts; keep the wording faithful — do NOT add content, summarize, \
-        translate, or answer questions in the text. Output ONLY the cleaned \
-        text with no preamble.
-        """
+        var prompt = instruction
+        if spokenPunctuation {
+            // SpokenPunctuation already did the common phrasings deterministically;
+            // this catches anything said unusually ("open bracket", "full stop there").
+            prompt += "\nIf the transcript names a punctuation mark out loud "
+                + "(\"question mark\", \"comma\", \"new line\"), replace it with the mark itself."
+        }
         if !vocabulary.isEmpty {
-            prompt += "\nKnown proper nouns / spellings: " + vocabulary.joined(separator: ", ") + "."
+            prompt += "\nKnown proper nouns / spellings, keep them spelled exactly like this: "
+                + vocabulary.joined(separator: ", ") + "."
         }
         prompt += "\n\nTranscript:\n\(text)\n\nCleaned text:"
 
@@ -35,7 +37,9 @@ struct LLMCleaner {
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        req.timeoutInterval = 20
+        // Heavy rewrites more text and thinks longer; a 20s ceiling silently degraded
+        // it to raw output on longer dictations.
+        req.timeoutInterval = level == .heavy ? 45 : 20
 
         do {
             let (data, resp) = try await URLSession.shared.data(for: req)

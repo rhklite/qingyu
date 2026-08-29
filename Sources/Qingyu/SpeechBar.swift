@@ -97,9 +97,20 @@ final class SpeechBar {
 
     private func reposition() {
         guard let panel, let screen = NSScreen.main else { return }
-        let vf = screen.visibleFrame
         let s = panel.frame.size
-        panel.setFrameOrigin(NSPoint(x: vf.midX - s.width / 2, y: vf.minY + 96))
+        panel.setFrameOrigin(NSPoint(x: screen.visibleFrame.midX - s.width / 2,
+                                     y: SpeechBar.bottomY(for: screen)))
+    }
+
+    /// Where the floating bar sits, measured from the bottom of the usable screen —
+    /// low, roughly where Wispr Flow puts its pill, rather than floating mid-screen.
+    /// `overlayBottomMargin` in config.json nudges it without a rebuild.
+    static var bottomMargin: CGFloat = 20
+
+    static func bottomY(for screen: NSScreen) -> CGFloat {
+        // visibleFrame already excludes the Dock, so this clears it rather than
+        // hiding behind it — and still sits low when the Dock is hidden.
+        screen.visibleFrame.minY + bottomMargin
     }
 }
 

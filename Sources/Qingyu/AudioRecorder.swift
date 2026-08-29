@@ -7,7 +7,11 @@ import AudioToolbox
 /// buffer is guarded by a lock.
 final class AudioRecorder {
     private var engine = AVAudioEngine()
+    /// Resampler for the format audio is *actually* arriving in. Built from the first
+    /// buffer rather than from the node's advertised format, because the two disagree
+    /// on Bluetooth mics — see `build(deviceUID:)`.
     private var converter: AVAudioConverter?
+    private var converterInputFormat: AVAudioFormat?
     private var samples: [Float] = []
     private let lock = NSLock()
 
@@ -29,6 +33,33 @@ final class AudioRecorder {
     private var built = false
     private var builtForUID: String?
     private var wantRecording = false          // desired state; guarded by `lock`
+    private var needsRebuild = false           // set from anywhere; consumed on `audioQueue`
+    private var configObserver: NSObjectProtocol?
+
+    /// Configuration-change notifications are ignored until this moment.
+    ///
+    /// Pinning the input device is *itself* a graph reconfiguration, so building the
+    /// engine fires the very notification whose job is to detect that the hardware moved
+    /// underneath us. Left alone that is a loop: build → notification → invalidate →
+    /// next press rebuilds → notification → … and each rebuild cost 2–6 s of missing
+    /// audio, which is what ate the first word (and sometimes the first sentence).
+    /// Changes we caused ourselves are not news; changes after the graph settles are.
+    private var ignoreConfigChangesUntil: CFAbsoluteTime = 0
+
+    deinit {
+        if let configObserver { NotificationCenter.default.removeObserver(configObserver) }
+    }
+
+    /// Throw the cached audio graph away before the next recording.
+    ///
+    /// A graph outlives the hardware it was built for: after a sleep/wake, a headset
+    /// disconnecting, or the default input switching, the engine object is still there
+    /// and still says it started fine, but its tap and converter describe a format that
+    /// no longer exists — so recordings come back empty and 轻语 looks dead until it's
+    /// relaunched. Rebuilding is cheap next to that.
+    func invalidate() {
+        lock.lock(); needsRebuild = true; lock.unlock()
+    }
 
     /// Begin capturing. Non-blocking: the mic/HAL spins up on a background queue so the
     /// UI (bar + chime) responds instantly. The audio graph is reused across recordings;
@@ -47,6 +78,24 @@ final class AudioRecorder {
                 catch { self.report(error); return }
             }
             if !self.isWanted() { self.engine.stop() }        // released during spin-up → close now
+        }
+    }
+
+    /// Build the audio graph ahead of the first press, without opening the mic.
+    ///
+    /// Pinning this Mac's input device costs 2–3 s, and paying it inside the first
+    /// press is exactly the "I pressed the button and nothing happened" experience.
+    /// `prepare()` allocates the graph but starts no IO, so nothing records and the
+    /// microphone indicator stays dark until the user actually holds the key.
+    func warmUp() {
+        let target = (preferredDeviceUID?.isEmpty == false) ? preferredDeviceUID : nil
+        audioQueue.async { [weak self] in
+            guard let self, !self.isWanted() else { return }   // mid-recording → leave it alone
+            do { try self.build(deviceUID: target) } catch {
+                NSLog("Qingyu: microphone warm-up failed (%@)", error.localizedDescription as NSString)
+                return
+            }
+            self.settleAfterStart()
         }
     }
 
@@ -85,21 +134,27 @@ final class AudioRecorder {
     /// changes. A warm start is just a flag flip; a cold start only restarts the HAL.
     /// Building a fresh engine on every press was the startup-latency cause.
     private func ensureRunning(deviceUID: String?, forceRebuild: Bool = false) throws {
-        if forceRebuild || !built || builtForUID != deviceUID {
+        lock.lock(); let stale = needsRebuild; needsRebuild = false; lock.unlock()
+        if forceRebuild || stale || !built || builtForUID != deviceUID {
             try build(deviceUID: deviceUID)
         }
         if !engine.isRunning {
             engine.prepare()
             try engine.start()
         }
+        settleAfterStart()
     }
 
     private func build(deviceUID: String?) throws {
+        // Everything from here until shortly after the engine is running is our own
+        // doing; the notifications it raises say nothing about the hardware.
+        lock.lock(); ignoreConfigChangesUntil = .greatestFiniteMagnitude; lock.unlock()
         if built {
             engine.stop()
             engine.inputNode.removeTap(onBus: 0)
         }
         engine = AVAudioEngine()
+        observeConfigurationChanges(of: engine)
         let input = engine.inputNode
 
         if let uid = deviceUID, !uid.isEmpty,
@@ -120,10 +175,18 @@ final class AudioRecorder {
             throw NSError(domain: "Qingyu.Audio", code: -1,
                           userInfo: [NSLocalizedDescriptionKey: "input device has no usable audio format"])
         }
-        converter = AVAudioConverter(from: inFormat, to: targetFormat)
+        lock.lock(); converter = nil; converterInputFormat = nil; lock.unlock()
+
+        // Tap with no format of our own: AVAudioEngine then uses whatever format the
+        // node is really running in. Handing it `inFormat` looks tidier but raises an
+        // ObjC exception — an immediate crash, not a catchable Swift error — the moment
+        // the node's advertised rate and the hardware's disagree. A 24 kHz Bluetooth
+        // headset behind a 48 kHz default input does exactly that, so 轻语 died on the
+        // first press instead of recording.
+        //
         // Only accumulate while a recording is actually wanted (the tap may still be
         // installed for a moment as the engine tears down).
-        input.installTap(onBus: 0, bufferSize: 4096, format: inFormat) { [weak self] buffer, _ in
+        input.installTap(onBus: 0, bufferSize: 4096, format: nil) { [weak self] buffer, _ in
             guard let self, self.isWanted() else { return }
             self.append(buffer)
         }
@@ -132,8 +195,43 @@ final class AudioRecorder {
         builtForUID = deviceUID
     }
 
+    /// Close the suppression window a beat after the engine is running: the reconfigure
+    /// notifications our own start provokes arrive slightly after `start()` returns.
+    private func settleAfterStart() {
+        lock.lock(); ignoreConfigChangesUntil = CFAbsoluteTimeGetCurrent() + 1.0; lock.unlock()
+    }
+
+    /// AVAudioEngine announces that it reconfigured its graph — and then keeps running
+    /// with a tap and converter that no longer match the hardware. Take the hint and
+    /// rebuild before the next press rather than recording silence.
+    private func observeConfigurationChanges(of engine: AVAudioEngine) {
+        if let configObserver { NotificationCenter.default.removeObserver(configObserver) }
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.lock.lock()
+            let settling = CFAbsoluteTimeGetCurrent() < self.ignoreConfigChangesUntil
+            self.lock.unlock()
+            guard !settling else { return }
+            self.invalidate()
+        }
+    }
+
+    /// The converter follows the buffers: the tap's real format is only known once
+    /// audio arrives, and it can change underneath us when a headset switches to its
+    /// call profile mid-recording.
+    private func converter(for format: AVAudioFormat) -> AVAudioConverter? {
+        lock.lock(); defer { lock.unlock() }
+        if let converter, converterInputFormat == format { return converter }
+        let made = AVAudioConverter(from: format, to: targetFormat)
+        converter = made
+        converterInputFormat = (made == nil) ? nil : format
+        return made
+    }
+
     private func append(_ inBuffer: AVAudioPCMBuffer) {
-        guard let converter else { return }
+        guard let converter = converter(for: inBuffer.format) else { return }
         let ratio = targetFormat.sampleRate / inBuffer.format.sampleRate
         let capacity = AVAudioFrameCount(Double(inBuffer.frameLength) * ratio) + 1024
         guard let out = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else { return }

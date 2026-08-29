@@ -30,8 +30,16 @@ actor WhisperEngine {
         if let ctx { whisper_free(ctx); self.ctx = nil }
 
         var cparams = whisper_context_default_params()
+        // Intel builds ship without the Metal backend (ggml gates matmul on
+        // MTLGPUFamilyApple7, which no Intel GPU reports), so run CPU + Accelerate.
+        // flash_attn rides on the same simdgroup kernels — off there too.
+        #if arch(arm64)
         cparams.use_gpu = true
         cparams.flash_attn = true
+        #else
+        cparams.use_gpu = false
+        cparams.flash_attn = false
+        #endif
 
         let created = modelPath.withCString { whisper_init_from_file_with_params($0, cparams) }
         guard let created else { throw WhisperError.modelLoadFailed }
@@ -41,9 +49,35 @@ actor WhisperEngine {
 
     var isLoaded: Bool { ctx != nil }
 
-    func transcribe(samples: [Float], language: String, detectLanguages: [String],
+    /// Leading silence prepended before whisper sees the audio.
+    ///
+    /// Push-to-talk hands whisper a clip that starts *mid-word*: the mic opens on the
+    /// press and the user is already speaking. Whisper is trained on windows that ease
+    /// in, and a waveform that jumps from nothing to a vowel at sample 0 reliably costs
+    /// the first token — the "it always eats my first word" complaint. Half a second of
+    /// silence gives the encoder the run-up it expects. It costs nothing: whisper pads
+    /// every clip to 30 s internally regardless.
+    private static let leadInSeconds = 0.5
+
+    /// Silence, then a few milliseconds of ramp so the splice into speech isn't a step
+    /// discontinuity — a hard edge is a broadband click, which is its own transcription
+    /// hazard. The ramp is short enough not to swallow the onset it's protecting.
+    private static func withLeadIn(_ samples: [Float]) -> [Float] {
+        guard !samples.isEmpty else { return samples }
+        let pad = Int(leadInSeconds * 16_000)
+        var out = [Float](repeating: 0, count: pad)
+        out.reserveCapacity(pad + samples.count)
+        out.append(contentsOf: samples)
+
+        let ramp = min(80, samples.count)          // 5 ms at 16 kHz
+        for i in 0..<ramp { out[pad + i] *= Float(i) / Float(ramp) }
+        return out
+    }
+
+    func transcribe(samples rawSamples: [Float], language: String, detectLanguages: [String],
                     vocabulary: [String]) throws -> String {
         guard let ctx else { throw WhisperError.notLoaded }
+        let samples = Self.withLeadIn(rawSamples)
 
         // Effective language: 1 selection = pin it; 2+ = restrict detection to that
         // subset (picks the most probable among them); none = the configured language.

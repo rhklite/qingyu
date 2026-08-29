@@ -8,8 +8,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let recorder = AudioRecorder()
     private let engine = WhisperEngine()
     private let speechBar = SpeechBar()
+    private let jargonToast = JargonToast()
+    private let ducker = AudioDucker()
     private var hotkey: HotKeyMonitor?
     private var hotkeyRetry: Timer?
+    private var hotkeyWatchdog: Timer?
+    private var napAssertion: NSObjectProtocol?
+    private var remapper: KeyRemapper?
+    private let updater = UpdateController()
+    /// True while the "press your new key" window is up. Rebinding deliberately stops the
+    /// live tap first, so without this the watchdog would restart it on the OLD key
+    /// mid-capture and start dictating at the very keypress being captured.
+    private var isCapturingHotkey = false
 
     private enum State { case loading, idle, listening, thinking, error, noModel }
     private var state: State = .loading { didSet { updateStatusIcon(); updateSpeechBar() } }
@@ -32,6 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.setActivationPolicy(.accessory)
         setupStatusItem()
         recorder.preferredDeviceUID = config.inputDeviceUID
+        recorder.warmUp()                      // pay the graph build now, not on first press
         recorder.onLevel = { [weak self] level in
             Task { @MainActor in self?.speechBar.update(level: level) }
         }
@@ -39,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             Task { @MainActor in
                 guard let self else { return }
                 self.speechBar.hide()
+                ActivityLog.shared.record("microphone error: \(error.localizedDescription)")
                 self.statusMessage = error.localizedDescription
                 self.state = .error
                 if self.config.playSounds { Cue.error() }
@@ -46,26 +58,98 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
 
-        // Request every permission the app needs in one pass on first launch, so the
-        // user can grant them all at once instead of hitting them feature by feature.
-        if !Permissions.allGranted {
-            Permissions.requestAll()
-        }
-
+        SpeechBar.bottomMargin = config.overlayBottomMargin
+        ducker.configure(setting: config.ducking, level: config.duckLevel)
+        preventAppNap()
         startHotkey()
-        loadModel()
+        startRemapper()
+        startHotkeyWatchdog()
+        observeWake()
+        updater.start(automatic: config.autoCheckUpdates)
+        // No model on disk yet (fresh install — the DMG doesn't ship one) means setup:
+        // pick a model, download it, then walk through permissions and cleanup. The
+        // wizard fires the permission prompts itself, after explaining them — firing
+        // them here first would stack system dialogs on top of the setup window.
+        if resolvedModelPath() == nil {
+            state = .noModel
+            DispatchQueue.main.async { [weak self] in self?.runModelSetup(firstRun: true) }
+        } else {
+            // Returning user with no wizard to run: ask for anything still missing.
+            if !Permissions.allGranted { Permissions.requestAll() }
+            // A model is already here (source install, or scripts/download_model.sh) —
+            // never interrupt those users with a picker they don't need.
+            if !config.modelChosen { config.modelChosen = true; config.save() }
+            loadModel()
+        }
         refreshOllamaStatus()
+    }
+
+    /// Runs the setup window. It only returns a model once that model is on disk, so
+    /// there's nothing to check here before loading it. The optional cleanup step is
+    /// offered on first run only — afterwards it lives behind its own menu item.
+    private func runModelSetup(firstRun: Bool, preselect: SpeechModel? = nil) {
+        let current = preselect ?? SpeechModel.named((config.modelPath as NSString).lastPathComponent)
+        let result = ModelChooser.present(current: firstRun ? preselect : current,
+                                          fullSetup: firstRun,
+                                          ollamaURL: config.ollamaURL,
+                                          ollamaModel: config.ollamaModel)
+        guard let result else {
+            if firstRun { loadModel() }   // dismissed — reflects reality in the menu
+            return
+        }
+        // The chooser already pointed Config.modelsDir at the new folder; persist it.
+        config.modelsDir = result.modelsDir
+        if let enabled = result.cleanupEnabled { applyCleanup(enabled) }
+        if let model = result.model {
+            applyModel(model)
+        } else if firstRun {
+            loadModel()
+        }
+    }
+
+    private func applyCleanup(_ enabled: Bool) {
+        config.level = enabled ? .light : .raw
+        config.save()
+        refreshOllamaStatus()
+    }
+
+    /// Add a newly heard term to the dictionary, then offer 10 seconds to take it back.
+    /// Adding first keeps dictation a flow activity — a question mid-flow is a tax, and
+    /// the common case is that the term is genuinely wanted.
+    private func offerJargon(in text: String) {
+        guard config.autoJargon else { return }
+        let known = config.customVocabulary + config.declinedJargon
+        guard let term = JargonDetector.candidate(in: text, known: known,
+                                                  replacements: config.replacements)
+        else { return }
+
+        config.customVocabulary.append(term)
+        config.save()
+        jargonToast.show(term: term) { [weak self] in
+            guard let self else { return }
+            self.config.customVocabulary.removeAll { $0.caseInsensitiveCompare(term) == .orderedSame }
+            // Remember the refusal, or the same mis-hearing nags after every dictation.
+            self.config.declinedJargon.append(term)
+            self.config.save()
+        }
+    }
+
+    /// Point config at `model` and reload.
+    private func applyModel(_ model: SpeechModel) {
+        config.modelPath = model.localURL.path
+        config.modelChosen = true
+        config.save()
+        loadModel()
     }
 
     // MARK: Model
 
     private func loadModel() {
         state = .loading
-        guard FileManager.default.fileExists(atPath: config.modelPath) else {
+        guard let path = resolvedModelPath() else {
             state = .noModel
             return
         }
-        let path = config.modelPath
         Task {
             do {
                 try await engine.load(modelPath: path)
@@ -75,6 +159,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 state = .error
             }
         }
+    }
+
+    /// config.json's modelPath, or a model shipped inside the bundle
+    /// (Contents/Resources/models — the DMG build) so a fresh install works with
+    /// no download step. Returns nil when neither exists.
+    private func resolvedModelPath() -> String? {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: config.modelPath) { return config.modelPath }
+        guard let dir = Bundle.main.resourceURL?.appendingPathComponent("models"),
+              let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+        else { return nil }
+        let wanted = (config.modelPath as NSString).lastPathComponent
+        if let exact = files.first(where: { $0.lastPathComponent == wanted }) { return exact.path }
+        return files.first(where: { $0.pathExtension == "bin" })?.path
     }
 
     private func refreshOllamaStatus() {
@@ -115,6 +213,85 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hotkeyRetry = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.startHotkey() }
         }
+    }
+
+    /// A menu-bar app with no windows is precisely what App Nap goes after: leave 轻语
+    /// alone for a few minutes and macOS throttles its run loop, the push-to-talk tap
+    /// stops answering within the deadline, and the system switches the tap off. Holding
+    /// a user-initiated activity for the process lifetime keeps the app answering while
+    /// still letting the Mac go to sleep on its own schedule.
+    private func preventAppNap() {
+        napAssertion = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiatedAllowingIdleSystemSleep],
+            reason: "Listening for the push-to-talk key")
+    }
+
+    /// macOS tells a tap it has been disabled by sending the news *to that tap* — so a
+    /// tap switched off while the app is throttled or the Mac is asleep never hears it
+    /// and stays dead until relaunch. That is the "leave it a while and it stops
+    /// working" failure, and the only reliable answer is to check rather than trust.
+    private func startHotkeyWatchdog() {
+        hotkeyWatchdog?.invalidate()
+        // Common modes so an open menu or a drag doesn't pause the check.
+        let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.reviveHotkey() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        hotkeyWatchdog = timer
+    }
+
+    /// Re-arm the tap, building a new one if macOS won't switch the old one back on.
+    private func reviveHotkey() {
+        guard !isCapturingHotkey else { return }   // rebinding stopped the tap on purpose
+        if let remapper, !remapper.isActive, !remapper.reviveIfNeeded() { startRemapper() }
+        guard hotkeyRetry == nil else { return }   // no tap yet — the retry timer owns this
+        guard let hotkey else { startHotkey(); return }
+        guard !hotkey.isActive else { return }
+        if !hotkey.reviveIfNeeded() { startHotkey() }
+    }
+
+    // MARK: Mouse → Return
+
+    /// Bring the remap tap up, down, or over to a different button, to match config.
+    /// Unlike push-to-talk this one needs Accessibility specifically: swallowing the
+    /// original click requires an active tap, which Input Monitoring alone won't grant.
+    private func startRemapper() {
+        remapper?.stop()
+        remapper = nil
+        guard config.remapEnabled else { return }
+        guard config.remapButtonCode != config.pttKeyCode else {
+            NSLog("Qingyu: remap button is also the push-to-talk key — remap left off")
+            return
+        }
+        let monitor = KeyRemapper(mouseButtonCode: config.remapButtonCode)
+        if monitor.start() {
+            remapper = monitor
+            ActivityLog.shared.record("mouse → Return active on "
+                                      + HotkeyCapture.name(for: config.remapButtonCode))
+        } else {
+            statusMessage = "Mouse → Return needs Accessibility"
+            updateStatusIcon()
+            ActivityLog.shared.record("mouse → Return failed: no Accessibility")
+        }
+    }
+
+    /// Sleep, screen lock and fast user switching all pull the rug out: the event tap
+    /// comes back disabled, and the audio graph is left describing a microphone that may
+    /// no longer be there. Rebuild both on the way back rather than on first failure.
+    private func observeWake() {
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didWakeNotification,
+                     NSWorkspace.screensDidWakeNotification,
+                     NSWorkspace.sessionDidBecomeActiveNotification] {
+            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.recoverAfterWake() }
+            }
+        }
+    }
+
+    private func recoverAfterWake() {
+        recorder.invalidate()   // the mic may be a different device than it was
+        reviveHotkey()
     }
 
     private func handleHotkey(_ key: HotKeyMonitor.Key) {
@@ -183,11 +360,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             return
         }
-        if config.playSounds { Cue.start() }   // instant audio + visual feedback
-        statusMessage = nil
+        // Ask for the microphone before anything else. The chime, the toast and the
+        // ducking all run on this actor and together cost ~300 ms — 300 ms of speech
+        // thrown away, because the user starts talking on the button press, not on the
+        // chime. Capture first; feedback is still instant to a human either way.
         recordingStart = Date()
-        state = .listening                     // bar shows now; the mic opens in the background
         recorder.start()
+
+        if config.playSounds { Cue.start() }   // instant audio + visual feedback
+        jargonToast.hide()                     // the speech bar wants that spot back
+        ducker.dictating = true                // quieten other audio, if enabled
+        statusMessage = nil
+        state = .listening                     // bar shows now; the mic opens in the background
+        ActivityLog.shared.record("started listening")
     }
 
     /// Transient failures (a flaky device, a whisper hiccup) must not brick the app.
@@ -204,10 +389,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func stopDictation() {
         guard state == .listening else { return }
+        ducker.dictating = false               // media comes back after resumeDelay
         let samples = recorder.stop()
         if config.playSounds { Cue.stop() }
 
         let duration = Date().timeIntervalSince(recordingStart)
+        // A hold long enough to speak into that captured nothing at all means the audio
+        // graph went stale underneath us. Rebuild it so the next press works, and say so:
+        // dropping the take in silence is what made this read as a dead app.
+        if duration > 0.3, samples.isEmpty {
+            ActivityLog.shared.record(String(format: "captured NO audio after %.1fs — rebuilding mic", duration))
+            recorder.invalidate()
+            notify("No audio from the microphone — try again")
+            state = .idle
+            return
+        }
         guard duration > 0.3, samples.count > 3_200 else {
             state = .idle   // too short — likely an accidental tap
             return
@@ -224,19 +420,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     detectLanguages: cfg.detectLanguages, vocabulary: cfg.customVocabulary)
 
                 var result = raw
-                if cfg.cleanup, !raw.isEmpty {
-                    let cleaner = LLMCleaner(baseURL: cfg.ollamaURL, model: cfg.ollamaModel)
-                    if let cleaned = await cleaner.cleanup(raw, vocabulary: cfg.customVocabulary) {
+                // Spoken punctuation first: it's deterministic, and doing it before the
+                // LLM means the model sees real sentences instead of the words "question
+                // mark" sitting mid-clause.
+                if cfg.spokenPunctuation { result = SpokenPunctuation.apply(to: result) }
+
+                if cfg.level != .raw, !result.isEmpty {
+                    let cleaner = LLMCleaner(baseURL: cfg.ollamaURL, model: cfg.ollamaModel,
+                                             level: cfg.level)
+                    if let cleaned = await cleaner.cleanup(
+                        result, vocabulary: cfg.customVocabulary,
+                        spokenPunctuation: cfg.spokenPunctuation) {
                         result = cleaned
                     }
                 }
+                // Replacements last, so the LLM can't undo a substitution the user
+                // explicitly asked for.
+                result = PersonalDictionary.applyReplacements(result, cfg.replacements)
 
                 self.state = .idle
+                ActivityLog.shared.record("transcribed \(result.count) chars")
                 guard !result.isEmpty else { return }
                 self.lastTranscript = result
-                TextInjector.inject(result, mode: cfg.injectionMode)
+                if TextInjector.inject(result, mode: cfg.injectionMode) == .clipboardOnly {
+                    // No Accessibility (often: not an admin on this Mac). Say so once
+                    // rather than looking broken — the text is on the clipboard.
+                    self.statusMessage = "Copied — press ⌘V to paste"
+                    self.updateStatusIcon()
+                }
+                self.offerJargon(in: result)
             } catch {
                 NSLog("Qingyu: transcription failed: %@", error.localizedDescription as NSString)
+                ActivityLog.shared.record("transcription failed: \(error.localizedDescription)")
                 self.statusMessage = error.localizedDescription
                 self.state = .error
                 if cfg.playSounds { Cue.error() }
@@ -255,8 +470,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateStatusIcon()
     }
 
+    /// The designed 轻语 mark, loaded once. Idle is a template image so macOS tints it
+    /// for light/dark menu bars; the listening cut keeps its amber dot, so it must NOT
+    /// be a template — the whole point of the two-tone mark is that the state change is
+    /// one colour swap on one stroke rather than a different glyph.
+    private static func menuBarImage(named name: String, template: Bool) -> NSImage? {
+        guard let url = Bundle.main.url(forResource: name, withExtension: "png"),
+              let image = NSImage(contentsOf: url) else { return nil }
+        image.size = NSSize(width: 16, height: 16)
+        image.isTemplate = template
+        return image
+    }
+
+    private lazy var idleIcon = Self.menuBarImage(named: "menubar-16", template: true)
+    private lazy var listeningIcon = Self.menuBarImage(named: "menubar-listening-16",
+                                                       template: false)
+
     private func updateStatusIcon() {
         guard let button = statusItem?.button else { return }
+
+        // States with their own meaning keep a system symbol; the designed mark covers
+        // the two states you actually look at.
+        switch state {
+        case .idle, .thinking:
+            if let idleIcon {
+                button.image = idleIcon
+                button.contentTintColor = state == .thinking ? .systemBlue : nil
+                button.toolTip = statusText
+                return
+            }
+        case .listening:
+            if let listeningIcon {
+                button.image = listeningIcon
+                button.contentTintColor = nil
+                button.toolTip = statusText
+                return
+            }
+        default:
+            break
+        }
+
         let symbol: String
         let tint: NSColor?
         switch state {
@@ -269,6 +522,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: statusText)
         button.contentTintColor = tint
+        button.toolTip = statusText
     }
 
     /// The floating speech bar follows recording state: waveform while listening,
@@ -295,6 +549,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private var hotkeyLabel: String {
+        // Don't advertise a key that physically cannot fire: the event tap needs
+        // Accessibility or Input Monitoring, neither of which a non-admin can grant.
+        guard Permissions.accessibilityGranted || Permissions.inputMonitoringGranted else {
+            return "Push-to-talk needs permissions"
+        }
         let name = keyName(config.pttKeyCode)
         switch config.hotkeyMode {
         case "toggle": return "Tap \(name) to start/stop"
@@ -304,38 +563,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // Rebuild the menu each time it opens so dynamic state stays current.
+    //
+    // Five things live here and nothing else: the two settings worth switching without
+    // breaking stride, the door into everything else, and the two you reach for when
+    // something is wrong. Every other setting is in the Settings window — a dropdown is
+    // for acting, not for configuring, and this one had grown into a second settings
+    // panel that happened to be shaped like a menu.
     func menuNeedsUpdate(_ menu: NSMenu) {
-        refreshOllamaStatus()
         menu.removeAllItems()
 
         menu.addItem(disabled("轻语 — \(statusText)"))
         menu.addItem(disabled(hotkeyLabel))
+        if config.remapEnabled {
+            menu.addItem(disabled(HotkeyCapture.name(for: config.remapButtonCode) + " sends Return"))
+        }
+
+        // Without Accessibility or Input Monitoring the hotkey tap can't run at all —
+        // the normal situation for someone who isn't an admin on this Mac. Dictating from
+        // the menu needs no permission beyond the microphone, so for those users this row
+        // is the only way in and has to stay.
+        if !Permissions.accessibilityGranted && !Permissions.inputMonitoringGranted {
+            menu.addItem(.separator())
+            addAction(state == .listening ? "■ Stop Dictation" : "● Start Dictation",
+                      to: menu, #selector(toggleDictationFromMenu))
+            menu.addItem(disabled("   no push-to-talk key without permissions"))
+        }
+        if state == .noModel {
+            menu.addItem(.separator())
+            addAction("⤓ Download a Model…", to: menu, #selector(downloadModel))
+        }
+        // Transient rather than configuration: there is nowhere in Settings this belongs.
+        if !lastTranscript.isEmpty {
+            menu.addItem(.separator())
+            addAction("Copy Last Transcript", to: menu, #selector(copyLast))
+        }
+
         menu.addItem(.separator())
-
-        let cleanupTitle = "LLM Cleanup: " + (config.cleanup
-            ? (ollamaReachable ? "On" : "On (Ollama offline)")
-            : "Off")
-        addAction(cleanupTitle, to: menu, #selector(toggleCleanup))
-        addAction("Boost Quiet Audio: " + (config.boostAudio ? "On" : "Off"), to: menu, #selector(toggleBoost))
-
-        menu.addItem(modeMenuItem())
-        addAction("Change Push-to-Talk Key…", to: menu, #selector(changeHotkey))
-
-        let overlayTitle = "Floating Bar: " + (config.showOverlay ? "On" : "Off")
-        addAction(overlayTitle, to: menu, #selector(toggleOverlay))
         menu.addItem(microphoneMenuItem())
         menu.addItem(languageMenuItem())
 
-        if !lastTranscript.isEmpty {
-            addAction("Copy Last Transcript", to: menu, #selector(copyLast))
-        }
         menu.addItem(.separator())
+        addAction("Open Settings…", to: menu, #selector(openSettings))
 
-        if state == .noModel {
-            addAction("⤓ Download a Model…", to: menu, #selector(showModelHelp))
-        }
-        addAction("Open Config Folder", to: menu, #selector(openConfigFolder))
-        menu.addItem(permissionsMenuItem())
+        menu.addItem(.separator())
+        addAction("Report a Bug…", to: menu, #selector(reportBug))
+        addAction(updater.isConfigured ? "Check for Updates…" : "Updates unavailable in this build",
+                  to: menu, #selector(checkForUpdates))
+        menu.items.last?.isEnabled = updater.isConfigured
+
         menu.addItem(.separator())
         addAction("Quit 轻语", to: menu, #selector(quit))
     }
@@ -352,48 +627,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item)
     }
 
-    /// A "Permissions" submenu showing ✓/✗ for each grant with a jump straight to its
-    /// System Settings pane, plus a one-click "Request All Permissions".
-    private func permissionsMenuItem() -> NSMenuItem {
-        let sub = NSMenu()
-        permRow(sub, "Microphone", Permissions.microphoneGranted, #selector(openMicPane))
-        permRow(sub, "Accessibility", Permissions.accessibilityGranted, #selector(openAccessibilityPane))
-        permRow(sub, "Input Monitoring", Permissions.inputMonitoringGranted, #selector(openInputMonitoringPane))
-        sub.addItem(.separator())
-        addAction("Request All Permissions…", to: sub, #selector(grantPermissions))
-
-        let parent = NSMenuItem(title: "Permissions " + (Permissions.allGranted ? "✓" : "⚠︎"),
-                                action: nil, keyEquivalent: "")
-        parent.submenu = sub
-        return parent
-    }
-
-    /// A "Mode" submenu: Hold, Toggle, or the hybrid Hold + double-tap lock.
-    private func modeMenuItem() -> NSMenuItem {
-        let sub = NSMenu()
-        modeRow(sub, "Hold to talk", "hold")
-        modeRow(sub, "Toggle (tap on / off)", "toggle")
-        modeRow(sub, "Hold + double-tap to lock", "hybrid")
-        let parent = NSMenuItem(title: "Mode", action: nil, keyEquivalent: "")
-        parent.submenu = sub
-        return parent
-    }
-
-    private func modeRow(_ menu: NSMenu, _ title: String, _ value: String) {
-        let item = NSMenuItem(title: title, action: #selector(setMode(_:)), keyEquivalent: "")
-        item.target = self
-        item.representedObject = value
-        item.state = (config.hotkeyMode == value) ? .on : .off
-        menu.addItem(item)
-    }
-
-    private static let languages: [(code: String, label: String)] = [
-        ("auto", "Auto-detect"), ("en", "English"), ("zh", "中文"), ("ja", "日本語"),
-        ("ko", "한국어"), ("es", "Español"), ("fr", "Français"), ("de", "Deutsch"),
-    ]
-
     /// A "Language" submenu. Toggle languages to build a detection set: 0 = detect among
     /// all, 1 = pin, 2+ = detect only among those (kills mis-detection on short/mixed clips).
+    ///
+    /// Only the common languages get a row — all 99 belong in Settings, where they can be
+    /// searched — plus whatever is currently picked, so a choice made there is never
+    /// invisible here.
     private func languageMenuItem() -> NSMenuItem {
         let sub = NSMenu()
         let set = config.detectLanguages
@@ -404,11 +643,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         sub.addItem(auto)
         sub.addItem(.separator())
 
-        for lang in Self.languages where lang.code != "auto" {
-            let item = NSMenuItem(title: lang.label, action: #selector(toggleLanguage(_:)), keyEquivalent: "")
+        for code in Language.common + set.filter({ !Language.common.contains($0) }) {
+            let item = NSMenuItem(title: Language.shortLabel(code),
+                                  action: #selector(toggleLanguage(_:)), keyEquivalent: "")
             item.target = self
-            item.representedObject = lang.code
-            item.state = set.contains(lang.code) ? .on : .off
+            item.representedObject = code
+            item.state = set.contains(code) ? .on : .off
             sub.addItem(item)
         }
 
@@ -416,18 +656,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let hint: String
         switch set.count {
         case 0:  hint = "Detecting: all languages"
-        case 1:  hint = "Pinned to \(languageLabel(set[0]))"
-        default: hint = "Detecting only: " + set.map(languageLabel).joined(separator: ", ")
+        case 1:  hint = "Pinned to \(Language.label(set[0]))"
+        default: hint = "Detecting only: " + set.map(Language.shortLabel).joined(separator: ", ")
         }
         sub.addItem(disabled(hint))
+        sub.addItem(disabled("More languages in Settings"))
 
         let parent = NSMenuItem(title: "Language", action: nil, keyEquivalent: "")
         parent.submenu = sub
         return parent
-    }
-
-    private func languageLabel(_ code: String) -> String {
-        Self.languages.first { $0.code == code }?.label ?? code
     }
 
     /// A "Microphone" submenu: System Default plus every connected input device,
@@ -468,48 +705,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return parent
     }
 
-    private func permRow(_ menu: NSMenu, _ name: String, _ granted: Bool, _ selector: Selector) {
-        let item = NSMenuItem(title: "\(granted ? "✓" : "✗")  \(name)", action: selector, keyEquivalent: "")
-        item.target = self
-        menu.addItem(item)
-    }
-
     // MARK: Menu actions
 
-    @objc private func toggleCleanup() {
-        config.cleanup.toggle()
-        config.save()
-        refreshOllamaStatus()
-    }
+    @objc private func openSettings() {
+        let actions = SettingsPanel.Actions(
+            chooseModel: { [weak self] in self?.runModelSetup(firstRun: false) },
+            setUpCleanup: { [weak self] in self?.setUpCleanupFlow() },
+            openConfigFolder: { NSWorkspace.shared.open(Config.configDir) },
+            checkForUpdates: { [weak self] in self?.updater.checkNow() },
+            openPermission: { [weak self] pane in self?.openPermissionPane(pane) },
+            captureMouseButton: { [weak self] done in
+                self?.beginHotkeyCapture(mouseOnly: true) { code in done(code) }
+            },
+            requestAllPermissions: { Permissions.requestAll() },
+            updatesConfigured: updater.isConfigured,
+            appVersion: UpdateController.currentVersion)
 
-    @objc private func toggleBoost() {
-        config.boostAudio.toggle()
-        config.save()
-    }
-
-    @objc private func setMode(_ sender: NSMenuItem) {
-        guard let value = sender.representedObject as? String else { return }
-        config.hotkeyMode = value
-        config.save()
-        pttLocked = false; ignoreNextUp = false   // reset hybrid state on mode change
-    }
-
-    @objc private func changeHotkey() {
-        hotkey?.stop()   // avoid the live tap firing on the current key during capture
-        hotkeyCapture.begin { [weak self] keyCode in
+        SettingsPanel.present(config: config, currentConfig: { [weak self] in
+            self?.config ?? Config.load()
+        }, actions: actions, onCaptureKey: { [weak self] done in
             guard let self else { return }
-            if let keyCode {
-                self.config.pttKeyCode = keyCode
-                self.config.save()
-            }
-            self.startHotkey()   // rebind (new key if changed, else the old one)
-        }
+            self.beginHotkeyCapture { keyCode in done(keyCode) }
+        }, onSave: { [weak self] updated in
+            guard let self else { return }
+            self.config = updated
+            self.config.save()
+            self.refreshOllamaStatus()
+            SpeechBar.bottomMargin = updated.overlayBottomMargin
+            self.ducker.configure(setting: updated.ducking, level: updated.duckLevel)
+            self.recorder.preferredDeviceUID = updated.inputDeviceUID  // applies next recording
+            self.pttLocked = false; self.ignoreNextUp = false          // mode may have changed
+            self.updater.setAutomatic(updated.autoCheckUpdates)
+            self.updateSpeechBar()                                     // overlay may have changed
+            self.startHotkey()                                         // key may have changed
+            self.startRemapper()                                       // button may have changed
+        })
     }
 
-    @objc private func toggleOverlay() {
-        config.showOverlay.toggle()
-        config.save()
-        updateSpeechBar()
+    /// Stop the live taps, capture one keypress, then bring them back. Shared by the menu
+    /// bar and the settings panel so the "stop first" rule — without which the tap
+    /// swallows the very press being captured — can't be forgotten in one of them.
+    private func beginHotkeyCapture(mouseOnly: Bool = false,
+                                    _ done: @escaping (Int?) -> Void) {
+        isCapturingHotkey = true
+        hotkey?.stop()
+        remapper?.stop()
+        hotkeyCapture.begin(mouseOnly: mouseOnly) { [weak self] keyCode in
+            Task { @MainActor in
+                guard let self else { return }
+                self.isCapturingHotkey = false
+                self.startHotkey()      // re-arm on the old key; callers rebind if it changed
+                self.startRemapper()
+                done(keyCode)
+            }
+        }
     }
 
     @objc private func selectMic(_ sender: NSMenuItem) {
@@ -517,6 +766,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         config.inputDeviceUID = uid.isEmpty ? nil : uid
         config.save()
         recorder.preferredDeviceUID = config.inputDeviceUID   // applies on next recording
+        recorder.warmUp()                                     // build for the new device now
     }
 
     @objc private func setAutoLanguage() {
@@ -534,6 +784,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         config.save()   // applies on the next dictation
     }
 
+    @objc private func toggleDictationFromMenu() {
+        if state == .listening { stopDictation() } else { startDictation() }
+    }
+
     @objc private func copyLast() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(lastTranscript, forType: .string)
@@ -543,63 +797,77 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSWorkspace.shared.open(Config.configDir)
     }
 
-    @objc private func showModelHelp() {
-        let alert = NSAlert()
-        alert.messageText = "Download a Whisper model"
-        alert.informativeText = """
-        轻语 needs a whisper.cpp GGML model. Either run
+    @objc private func downloadModel() {
+        runModelSetup(firstRun: false)
+    }
 
-            ./scripts/download_model.sh
-
-        from the 轻语 repo, or download a model (e.g.
-        ggml-large-v3-turbo-q5_0.bin from Hugging Face:
-        ggerganov/whisper.cpp) into:
-
-            \(Config.modelsDir.path)
-
-        Then choose “Reload Model”. config.json → modelPath controls
-        which file 轻语 loads.
-        """
-        alert.addButton(withTitle: "Open Models Folder")
-        alert.addButton(withTitle: "Reload Model")
-        alert.addButton(withTitle: "Close")
-        NSApp.activate(ignoringOtherApps: true)
-        switch alert.runModal() {
-        case .alertFirstButtonReturn:
-            try? FileManager.default.createDirectory(at: Config.modelsDir, withIntermediateDirectories: true)
-            NSWorkspace.shared.open(Config.modelsDir)
-        case .alertSecondButtonReturn:
-            config = Config.load()
-            loadModel()
+    /// Prompt for a permission and open its System Settings pane. `pane` is the name
+    /// Apple's URL scheme uses, which for Input Monitoring is "ListenEvent".
+    private func openPermissionPane(_ pane: String) {
+        switch pane {
+        case "Microphone":
+            Permissions.requestMicrophone { _ in }
+        case "Accessibility":
+            Permissions.ensureAccessibility(prompt: true)
+        case "ListenEvent":
+            Permissions.ensureInputMonitoring(prompt: true)
         default:
             break
         }
-    }
-
-    @objc private func grantPermissions() {
-        Permissions.requestAll()
-        Permissions.openPrivacySettings(pane: "Accessibility")
+        Permissions.openPrivacySettings(pane: pane)
+        // The taps can come up the moment the switch is flipped; re-attempt on return.
         startHotkey()
+        startRemapper()
     }
 
-    @objc private func openMicPane() {
-        Permissions.requestMicrophone { _ in }
-        Permissions.openPrivacySettings(pane: "Microphone")
-    }
-
-    @objc private func openAccessibilityPane() {
-        Permissions.ensureAccessibility(prompt: true)
-        Permissions.openPrivacySettings(pane: "Accessibility")
-    }
-
-    @objc private func openInputMonitoringPane() {
-        Permissions.ensureInputMonitoring(prompt: true)
-        Permissions.openPrivacySettings(pane: "ListenEvent")
-        startHotkey()
+    /// Reopens just the cleanup step: probes Ollama, offers to pull the model, or
+    /// explains what's missing when Ollama isn't installed.
+    private func setUpCleanupFlow() {
+        if let enabled = ModelChooser.presentCleanup(ollamaURL: config.ollamaURL,
+                                                     ollamaModel: config.ollamaModel) {
+            applyCleanup(enabled)
+        }
     }
 
     @objc private func quit() {
         NSApp.terminate(nil)
+    }
+
+    @objc private func checkForUpdates() {
+        guard updater.isConfigured else { return }
+        updater.checkNow()
+    }
+
+    /// Writes the report to the Desktop and puts it on the clipboard, then offers to
+    /// open a prefilled GitHub issue. The file is the point — the people using this text
+    /// it over rather than filing anything.
+    @objc private func reportBug() {
+        let report = BugReport.text(config: config, state: statusText,
+                                    lastError: statusMessage,
+                                    recentLog: ActivityLog.shared.recent)
+        let url = BugReport.save(report)
+
+        let alert = NSAlert()
+        alert.messageText = "Bug report ready"
+        alert.informativeText = url.map {
+            "Saved to your Desktop as \($0.lastPathComponent), and copied to the clipboard.\n\n"
+            + "Open it, describe what went wrong at the top, then send it over."
+        } ?? "Copied to the clipboard — paste it into a message and describe what went wrong."
+        alert.addButton(withTitle: url == nil ? "OK" : "Show in Finder")
+        alert.addButton(withTitle: "Open a GitHub Issue")
+        alert.addButton(withTitle: "Done")
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            if let url { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+        case .alertSecondButtonReturn:
+            if let issue = BugReport.githubURL(title: "轻语 \(UpdateController.currentVersion): ",
+                                               body: report) {
+                NSWorkspace.shared.open(issue)
+            }
+        default:
+            break
+        }
     }
 
     // MARK: Helpers
@@ -610,17 +878,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if config.playSounds { Cue.error() }
     }
 
-    private func keyName(_ code: Int) -> String {
-        switch code {
-        case 61: return "Right ⌥"
-        case 58: return "Left ⌥"
-        case 62: return "Right ⌃"
-        case 59: return "Left ⌃"
-        case 54: return "Right ⌘"
-        case 55: return "Left ⌘"
-        case 60: return "Right ⇧"
-        case 56: return "Left ⇧"
-        default: return "key \(code)"
-        }
-    }
+    private func keyName(_ code: Int) -> String { HotkeyCapture.name(for: code) }
 }
