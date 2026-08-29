@@ -81,6 +81,8 @@ final class SettingsPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate 
         var requestAllPermissions: () -> Void
         var updatesConfigured: Bool
         var appVersion: String
+        /// Version Sparkle has found and the user hasn't installed, or nil when current.
+        var updateAvailable: String?
     }
 
     private init(config: Config,
@@ -328,13 +330,19 @@ final class SettingsPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate 
         autoUpdateCheck.isEnabled = actions.updatesConfigured
         content.addArrangedSubview(autoUpdateCheck)
 
-        let checkNow = NSButton(title: "Check Now", target: self, action: #selector(checkUpdatesTapped))
+        let pending = actions.updateAvailable
+        let checkNow = NSButton(title: pending == nil ? "Check Now" : "Update Now",
+                                target: self, action: #selector(checkUpdatesTapped))
         checkNow.bezelStyle = .rounded
         checkNow.controlSize = .small
         checkNow.isEnabled = actions.updatesConfigured
-        let versionLabel = NSTextField(labelWithString: "Version \(actions.appVersion)")
-        versionLabel.font = .systemFont(ofSize: 11)
-        versionLabel.textColor = .secondaryLabelColor
+        if pending != nil { checkNow.keyEquivalent = "\r" }   // the obvious thing to press
+        let versionLabel = NSTextField(labelWithString: pending.map {
+            "Version \(actions.appVersion) — \($0) available"
+        } ?? "Version \(actions.appVersion)")
+        versionLabel.font = pending == nil ? .systemFont(ofSize: 11)
+                                           : .systemFont(ofSize: 11, weight: .semibold)
+        versionLabel.textColor = pending == nil ? .secondaryLabelColor : .controlAccentColor
         let updateRow = NSStackView(views: [versionLabel, checkNow])
         updateRow.orientation = .horizontal
         updateRow.spacing = 10

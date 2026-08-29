@@ -66,6 +66,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         startHotkeyWatchdog()
         observeWake()
         updater.start(automatic: config.autoCheckUpdates)
+        // A scheduled check no longer opens a window (see UpdateController), so the
+        // menu-bar mark is how the user learns an update is waiting.
+        updater.onAvailabilityChange = { [weak self] in self?.updateStatusIcon() }
         // No model on disk yet (fresh install — the DMG doesn't ship one) means setup:
         // pick a model, download it, then walk through permissions and cleanup. The
         // wizard fires the permission prompts itself, after explaining them — firing
@@ -607,9 +610,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
         addAction("Report a Bug…", to: menu, #selector(reportBug))
-        addAction(updater.isConfigured ? "Check for Updates…" : "Updates unavailable in this build",
-                  to: menu, #selector(checkForUpdates))
-        menu.items.last?.isEnabled = updater.isConfigured
+        if let version = updater.availableVersion {
+            addAction("Update to \(version)…", to: menu, #selector(checkForUpdates))
+            // Bold, the way macOS marks the one item in a menu that wants acting on.
+            let bold = NSFontManager.shared.convert(NSFont.menuFont(ofSize: 0),
+                                                    toHaveTrait: .boldFontMask)
+            menu.items.last?.attributedTitle = NSAttributedString(
+                string: "Update to \(version)…", attributes: [.font: bold])
+        } else {
+            addAction(updater.isConfigured ? "Check for Updates…" : "Updates unavailable in this build",
+                      to: menu, #selector(checkForUpdates))
+            menu.items.last?.isEnabled = updater.isConfigured
+        }
 
         menu.addItem(.separator())
         addAction("Quit 轻语", to: menu, #selector(quit))
@@ -719,7 +731,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             },
             requestAllPermissions: { Permissions.requestAll() },
             updatesConfigured: updater.isConfigured,
-            appVersion: UpdateController.currentVersion)
+            appVersion: UpdateController.currentVersion,
+            updateAvailable: updater.availableVersion)
 
         SettingsPanel.present(config: config, currentConfig: { [weak self] in
             self?.config ?? Config.load()
