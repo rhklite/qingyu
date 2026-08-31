@@ -7,7 +7,9 @@ import Cocoa
 /// except the things a menu can't hold — the dictionary table, and a 99-language
 /// picker you can actually search.
 ///
-/// Save applies and closes. Cancel closes and changes nothing.
+/// Save applies and closes, and so does closing the window — only Cancel throws the
+/// edits away. A panel whose red X silently discarded what you just set is a bug
+/// people rediscover one setting at a time.
 @MainActor
 final class SettingsPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     private var window: NSWindow!
@@ -752,6 +754,13 @@ final class SettingsPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate 
     @objc private func cancel() { close() }
 
     @objc private func save() {
+        applyEdits()
+        close()
+    }
+
+    /// Fold this window's edits into the app's config. Called by Save and by closing the
+    /// window; `close()` orders out rather than closing, so neither path runs twice.
+    private func applyEdits() {
         // Start from the app's config as it stands right now, not from the snapshot this
         // window opened with, then lay this window's edits on top. Writing the snapshot
         // back wholesale is what made a push-to-talk key set here lose to one set from the
@@ -789,7 +798,6 @@ final class SettingsPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate 
         }
 
         onSave(out)
-        close()
     }
 
     private func close() {
@@ -828,6 +836,14 @@ final class SettingsPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate 
 }
 
 extension SettingsPanel: NSWindowDelegate {
+    /// The red X (and ⌘W) apply, the way macOS's own Settings does. Save and Cancel both
+    /// leave through `close()`, which orders the window out without asking the delegate,
+    /// so this only ever fires for a close the user made from the window itself.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        applyEdits()
+        return true
+    }
+
     func windowWillClose(_ notification: Notification) { Self.open = nil }
 
     /// Granting a permission means leaving for System Settings and coming back, so the
