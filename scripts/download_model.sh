@@ -11,7 +11,12 @@ DEST="$HOME/.config/qingyu/models"
 FILE="ggml-${MODEL}.bin"
 URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${FILE}"
 
-mkdir -p "$DEST"
+if ! mkdir -p "$DEST" 2>/dev/null || [[ ! -w "$DEST" ]]; then
+    echo "Can't write to $DEST — it (or ~/.config) is owned by another user, often root." >&2
+    echo "Fix it once, then re-run:" >&2
+    echo "  sudo mkdir -p ~/.config/qingyu && sudo chown -R \"\$(id -un):\$(id -gn)\" ~/.config/qingyu" >&2
+    exit 1
+fi
 if [[ -f "$DEST/$FILE" ]]; then
     echo "Already present: $DEST/$FILE"
     exit 0

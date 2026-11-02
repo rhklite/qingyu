@@ -17,6 +17,24 @@ say() { printf '\n\033[1m== %s ==\033[0m\n' "$1"; }
 say "轻语 (Qingyu) setup"
 command -v cmake >/dev/null || { echo "CMake required — install it first: brew install cmake" >&2; exit 1; }
 
+# ~/.config can end up root-owned when another tool was installed with sudo. Check it
+# up front: otherwise the model download fails with a bare "Permission denied" — and
+# only after the whisper build.
+CONFIG_DIR="$HOME/.config/qingyu"
+config_writable() {
+    mkdir -p "$CONFIG_DIR/models" 2>/dev/null || return 1
+    local p
+    for p in "$CONFIG_DIR" "$CONFIG_DIR/models" "$CONFIG_DIR/config.json"; do
+        [[ ! -e "$p" || -w "$p" ]] || return 1
+    done
+}
+if ! config_writable; then
+    echo "Can't write to $CONFIG_DIR — it (or ~/.config) is owned by another user, often root." >&2
+    echo "Fix it once, then re-run this script:" >&2
+    echo "  sudo mkdir -p ~/.config/qingyu && sudo chown -R \"\$(id -un):\$(id -gn)\" ~/.config/qingyu" >&2
+    exit 1
+fi
+
 # Build only for this Mac. The universal (arm64 + x86_64) build is for handing the app
 # to someone else — see scripts/makedmg.sh.
 export QINGYU_ARCHS="${QINGYU_ARCHS:-$(uname -m)}"
