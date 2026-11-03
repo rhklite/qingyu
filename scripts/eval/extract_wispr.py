@@ -60,6 +60,29 @@ def main():
             }, ensure_ascii=False) + "\n")
             kept += 1
     print(f"{kept} clips -> {out_dir}")
+    extract_lists(db, out_dir)
+
+
+def extract_lists(db, out_dir, negatives=200, min_words=12):
+    """Text-only set for list formatting: every dictation Wispr turned into a list
+    (its formatted output has <ol>/<ul>), plus a seeded sample of comparably long ones
+    it left as prose. The input is Wispr's raw transcript."""
+    import random
+
+    rows = db.execute(
+        """SELECT transcriptEntityId, asrText, formattedText FROM History
+           WHERE coalesce(asrText, '') != '' AND coalesce(formattedText, '') != ''
+           ORDER BY timestamp"""
+    ).fetchall()
+    pos = [r for r in rows if "<ol>" in r[2] or "<ul>" in r[2]]
+    prose = [r for r in rows if r not in pos and len(r[1].split()) >= min_words]
+    neg = random.Random(0).sample(prose, min(negatives, len(prose)))
+    with open(os.path.join(out_dir, "lists.jsonl"), "w") as f:
+        for kind, group in (("list", pos), ("prose", neg)):
+            for clip_id, asr, formatted in group:
+                f.write(json.dumps({"id": clip_id, "kind": kind, "text": asr.strip(),
+                                    "wispr": formatted.strip()}, ensure_ascii=False) + "\n")
+    print(f"{len(pos)} list + {len(neg)} prose dictations -> {out_dir}/lists.jsonl")
 
 
 if __name__ == "__main__":

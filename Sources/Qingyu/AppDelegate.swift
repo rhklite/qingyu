@@ -441,6 +441,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         result = cleaned
                     }
                 }
+                // Lists need a few sentences to exist; short dictations skip the wait.
+                if cfg.formatLists, !result.isEmpty,
+                   result.split(whereSeparator: \.isWhitespace).count >= cfg.listMinWords,
+                   let listed = await ListFormatter(baseURL: cfg.ollamaURL, model: cfg.listModel)
+                       .format(result) {
+                    result = listed
+                }
                 // Replacements last, so the LLM can't undo a substitution the user
                 // explicitly asked for.
                 result = PersonalDictionary.applyReplacements(result, cfg.replacements)

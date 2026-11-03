@@ -9,6 +9,7 @@
 #   QINGYU_LLM=1|0            enable / skip LLM cleanup without the prompt
 #   QINGYU_WHISPER_MODEL=…    whisper model (default large-v3-turbo-q5_0)
 #   QINGYU_OLLAMA_MODEL=…     cleanup model (default qwen2.5:3b)
+#   QINGYU_LIST_MODEL=…       list-formatting model (default qwen3:4b-instruct)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -45,12 +46,13 @@ fi
 
 MODEL="${QINGYU_WHISPER_MODEL:-large-v3-turbo-q5_0}"
 OLLAMA_MODEL="${QINGYU_OLLAMA_MODEL:-qwen2.5:3b}"
+LIST_MODEL="${QINGYU_LIST_MODEL:-qwen3:4b-instruct}"
 
 # --- Ask about optional LLM cleanup up front, then run unattended -------------------
 want_llm="${QINGYU_LLM:-}"
 if [[ -z "$want_llm" ]]; then
     if [[ -t 0 ]]; then
-        read -r -p "Enable local-LLM cleanup? Installs Ollama + ${OLLAMA_MODEL} (~1.9 GB). [y/N] " ans
+        read -r -p "Enable local-LLM cleanup? Installs Ollama + ${OLLAMA_MODEL} and ${LIST_MODEL} for lists (~4.4 GB). [y/N] " ans
         [[ "$ans" =~ ^[Yy] ]] && want_llm=1 || want_llm=0
     else
         want_llm=0   # non-interactive default: raw whisper output
@@ -87,6 +89,7 @@ if [[ "$want_llm" == "1" ]]; then
     brew services start ollama >/dev/null 2>&1 || (nohup ollama serve >/dev/null 2>&1 &)
     for _ in $(seq 1 30); do curl -sf http://127.0.0.1:11434/api/tags >/dev/null && break; sleep 1; done
     ollama pull "$OLLAMA_MODEL"
+    ollama pull "$LIST_MODEL"   # turns spoken enumerations into lists (formatLists)
 fi
 
 # --- Point the config at the model + record the cleanup choice ---------------------

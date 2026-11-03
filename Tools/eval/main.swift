@@ -40,12 +40,52 @@ func arg(_ name: String, _ fallback: String) -> String {
     return fallback
 }
 
+struct ListCase: Decodable {
+    let id: String
+    let kind: String
+    let text: String
+}
+
+/// --lists PATH: run the list check and rewrite over text-only cases, logging each step.
+func runLists(path: String, out: String, cfg: [String: Any]) async throws {
+    let cases = try String(contentsOfFile: path, encoding: .utf8)
+        .split(separator: "\n")
+        .map { try JSONDecoder().decode(ListCase.self, from: Data($0.utf8)) }
+    let formatter = ListFormatter(
+        baseURL: cfg["ollamaURL"] as? String ?? "http://127.0.0.1:11434",
+        model: arg("--llm", cfg["listModel"] as? String ?? "qwen3:4b-instruct"))
+
+    FileManager.default.createFile(atPath: out, contents: nil)
+    let sink = try FileHandle(forWritingTo: URL(fileURLWithPath: out))
+    for c in cases {
+        let t0 = Date()
+        let yes = await formatter.isList(c.text)
+        let checkSecs = Date().timeIntervalSince(t0)
+        let listed = yes ? await formatter.rewrite(c.text) : nil
+        let row: [String: Any] = [
+            "id": c.id, "kind": c.kind, "input": c.text, "yes": yes,
+            "output": listed ?? c.text, "listed": listed != nil,
+            "check_secs": checkSecs, "secs": Date().timeIntervalSince(t0),
+        ]
+        sink.write(try JSONSerialization.data(withJSONObject: row))
+        sink.write(Data("\n".utf8))
+    }
+    try sink.close()
+    print("\(cases.count) list cases -> \(out)")
+}
+
 @main
 struct Eval {
     static func main() async throws {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let cfgData = FileManager.default.contents(atPath: home + "/.config/qingyu/config.json") ?? Data("{}".utf8)
         let cfg = (try JSONSerialization.jsonObject(with: cfgData) as? [String: Any]) ?? [:]
+
+        if CommandLine.arguments.contains("--lists") {
+            try await runLists(path: arg("--lists", ""),
+                               out: arg("--out", home + "/.config/qingyu/eval/lists-out.jsonl"), cfg: cfg)
+            return
+        }
 
 
         let manifest = arg("--manifest", home + "/.config/qingyu/eval/manifest.jsonl")

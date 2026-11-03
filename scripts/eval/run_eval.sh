@@ -4,6 +4,7 @@
 # Usage: scripts/eval/run_eval.sh [settings] [extra args for the runner]
 #   settings: comma-separated, each a "+"-joined list of changes (default: baseline and each change)
 #   e.g. scripts/eval/run_eval.sh baseline,natural+zh --limit 20
+#   scripts/eval/run_eval.sh lists [--llm qwen2.5:7b]   # list check + rewrite (needs Ollama)
 # Needs the test set first: python3 -I scripts/eval/extract_wispr.py
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -25,10 +26,19 @@ swiftc -O -parse-as-library \
     Tools/eval/main.swift \
     Sources/Qingyu/WhisperEngine.swift Sources/Qingyu/Dictionary.swift \
     Sources/Qingyu/AudioRecorder.swift Sources/Qingyu/AudioDevices.swift \
+    Sources/Qingyu/ListFormatter.swift \
     "${LIBS[@]}" -lc++ \
     -framework Metal -framework MetalKit -framework Accelerate -framework AppKit \
     -framework AVFoundation -framework CoreAudio -framework AudioToolbox \
     -o .build/qingyu-eval
+
+if [[ "${1:-}" == "lists" ]]; then
+    shift
+    OUT="$HOME/.config/qingyu/eval/lists-out.jsonl"
+    .build/qingyu-eval --lists "$HOME/.config/qingyu/eval/lists.jsonl" --out "$OUT" "$@"
+    python3 -I scripts/eval/score_lists.py "$OUT"
+    exit 0
+fi
 
 SETTINGS="${1:-baseline,natural,zh,natural+zh}"
 shift || true

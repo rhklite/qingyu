@@ -272,6 +272,9 @@ Mic icon in the menu bar → status, hotkey hint, and:
 | `playSounds` | `true` | soft start/stop chimes |
 | `customVocabulary` | `[]` | proper nouns; biases whisper + cleanup |
 | `simplifiedChinese` | `true` | traditional → simplified characters on Chinese output |
+| `formatLists` | `true` | turn spoken enumerations into lists with the local LLM (experimental branch) |
+| `listMinWords` | `12` | shorter dictations skip the list check, so they paste with no LLM wait |
+| `listModel` | `qwen3:4b-instruct` | Ollama model for the list check and rewrite |
 
 Prefer a modifier key for `pttKeyCode` — a normal key would type its character while held.
 You can also set it live via **Change Push-to-Talk Key…**.
@@ -297,6 +300,17 @@ A setting is a `+`-joined list of changes on top of the original decoder: `natur
 (traditional → simplified). On 160 clips (135 English, 25 Chinese, MacBook mic),
 `natural+zh` took the error rate from 9.09% to 8.64% (16 clips changed: 10 better,
 6 worse) at the same speed; both are on in the app. Experiments that showed no gain live on their own `feature/*` branches.
+
+**This branch: list formatting.** `ListFormatter` asks the local model (Ollama,
+`listModel`) a one-word YES/NO "is this a list?" on every dictation of `listMinWords`
+or more, and only on YES rewrites it as a lead-in plus `1.` / `-` items; a rewrite that
+changes more than 25% of the words (enumeration words aside) is thrown away. Measured
+with `scripts/eval/run_eval.sh lists` on 165 dictations Wispr turned into lists and 200
+it left as prose (qwen3:4b-instruct, M3 Pro): 46% of Wispr's lists caught, but 2.5% of
+prose wrongly listed. Lists are only 1.4% of long dictations, so about 4 in 5 lists it
+produced would be unwanted, and caught lists are often mis-structured (a first step
+taken as the lead-in). The check costs ~0.12 s, check plus rewrite ~1.2 s. Not on main.
+qwen2.5:3b and qwen2.5:7b did worse; the "thinking" qwen3:4b tag can't be used at all.
 
 ## Layout
 
