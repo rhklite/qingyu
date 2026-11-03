@@ -25,6 +25,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var state: State = .loading { didSet { updateStatusIcon(); updateSpeechBar() } }
 
     private var recordingStart = Date.distantPast
+    /// Silero VAD weights in the models folder, for WhisperEngine's speech gate.
+    /// Fetched in the background when missing; until they land, the gate stays open.
+    static let vadModelFile = "ggml-silero-v6.2.0.bin"
+    private static let vadModelURL =
+        URL(string: "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin")!
     private var lastTranscript = ""
     private var statusMessage: String?
     private var ollamaReachable = false
@@ -149,6 +154,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func loadModel() {
         state = .loading
+        fetchVADModelIfMissing()
         guard let path = resolvedModelPath() else {
             state = .noModel
             return
@@ -162,6 +168,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 state = .error
             }
         }
+    }
+
+    /// ~1 MB, so no progress UI. Lands as .part first, so an interrupted download can't
+    /// leave a file that looks installed and then never loads.
+    private func fetchVADModelIfMissing() {
+        let dest = Config.modelsDir.appendingPathComponent(Self.vadModelFile)
+        guard !FileManager.default.fileExists(atPath: dest.path) else { return }
+        let part = dest.appendingPathExtension("part")
+        URLSession.shared.downloadTask(with: Self.vadModelURL) { tmp, response, error in
+            let fm = FileManager.default
+            guard let tmp, (response as? HTTPURLResponse)?.statusCode == 200,
+                  let size = (try? fm.attributesOfItem(atPath: tmp.path))?[.size] as? Int,
+                  size > 100_000 else {
+                NSLog("Qingyu: VAD model download failed: %@",
+                      (error?.localizedDescription ?? "bad response") as NSString)
+                return
+            }
+            try? fm.removeItem(at: part)
+            do {
+                try fm.moveItem(at: tmp, to: part)
+                try fm.moveItem(at: part, to: dest)
+            } catch {
+                NSLog("Qingyu: VAD model install failed: %@", error.localizedDescription as NSString)
+            }
+        }.resume()
     }
 
     /// config.json's modelPath, or a model shipped inside the bundle
@@ -424,6 +455,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 options.vocabulary = cfg.customVocabulary
                 options.naturalPrompt = true
                 options.simplifiedChinese = cfg.simplifiedChinese
+                options.speechGateModelPath =
+                    Config.modelsDir.appendingPathComponent(Self.vadModelFile).path
                 let raw = try await self.engine.transcribe(samples: audio, options: options)
 
                 var result = raw

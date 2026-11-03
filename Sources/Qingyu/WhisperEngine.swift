@@ -1,5 +1,6 @@
 import Foundation
 import CWhisper
+import os
 
 enum WhisperError: Error, LocalizedError {
     case modelMissing(String)
@@ -29,6 +30,10 @@ struct DecodeOptions {
     /// Traditional → simplified characters on zh output. (A simplified-Chinese sentence
     /// in the prompt was tried too: it sent whisper into a repetition loop in the eval.)
     var simplifiedChinese = false
+    /// Silero VAD weights. When set, a take with no speech in it returns "" without
+    /// reaching whisper, which otherwise invents text for silence: "Thank you.",
+    /// "*sad music*", a lone ".". nil = no gate.
+    var speechGateModelPath: String?
 }
 
 /// Serialized wrapper around a whisper.cpp context. whisper contexts are not
@@ -90,6 +95,9 @@ actor WhisperEngine {
 
     func transcribe(samples rawSamples: [Float], options o: DecodeOptions) throws -> String {
         guard let ctx else { throw WhisperError.notLoaded }
+        if let path = o.speechGateModelPath, containsSpeech(rawSamples, modelPath: path) == false {
+            return ""
+        }
         let samples = Self.withLeadIn(rawSamples)
 
         // Effective language: 1 selection = pin it; 2+ = restrict detection to that
@@ -139,7 +147,19 @@ actor WhisperEngine {
                 text += String(cString: seg)
             }
         }
+        // Sound labels ("*Cough*", "[Music]", "♪") are whisper captioning a noise, never
+        // words said. Parentheses only go when they are the whole output, since "(see
+        // below)" can be real dictation.
+        let unlabeled = text.replacingOccurrences(
+            // Asterisks must hug the label, so "2 * 3 * 4" survives.
+            of: #"\s*(?:\*(?=\S)[^*\n]{1,40}(?<=\S)\*|\[[^\]\n]{1,40}\]|♪+)"#, with: "",
+            options: .regularExpression)
+        if unlabeled != text { Self.log.notice("dropped a sound label") }
+        text = unlabeled.range(of: #"^\s*\([^)\n]{1,40}\)\s*$"#, options: .regularExpression) == nil
+            ? unlabeled : ""
         text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Punctuation alone is whisper's usual guess at near-silence, never something said.
+        guard text.contains(where: { $0.isLetter || $0.isNumber }) else { return "" }
 
         // whisper often writes Mandarin in traditional characters. ICU's transform leaves
         // Latin text alone, so mixed Chinese/English survives intact.
@@ -152,6 +172,61 @@ actor WhisperEngine {
             }
         }
         return text
+    }
+
+    // MARK: Speech gate
+
+    private var vad: OpaquePointer?
+    private var vadPath: String?
+    /// NSLog doesn't reach the unified log on current macOS; Logger does
+    /// (`log show --predicate 'subsystem == "com.local.qingyu"'`).
+    private static let log = Logger(subsystem: "com.local.qingyu", category: "speech-gate")
+
+    /// Whether Silero VAD hears any speech in `samples`, or nil when the model can't be
+    /// used. Callers let nil through: a missing gate must never swallow a real take.
+    private func containsSpeech(_ samples: [Float], modelPath: String) -> Bool? {
+        if vadPath != modelPath {
+            if let vad { whisper_vad_free(vad); self.vad = nil }
+            vadPath = nil
+            guard FileManager.default.fileExists(atPath: modelPath) else {
+                Self.log.notice("no VAD model yet; gate open")
+                return nil
+            }
+            var cparams = whisper_vad_default_context_params()
+            cparams.use_gpu = false     // ~1 MB model; Metal setup would cost more than it saves
+            guard let created = whisper_vad_init_from_file_with_params(modelPath, cparams) else {
+                Self.log.error("VAD model failed to load; gate open")
+                return nil
+            }
+            vad = created
+            vadPath = modelPath
+        }
+        guard let vad else { return nil }
+        // Looser than the defaults (0.5, 250 ms), which dropped a 0.8 s "Chat.". On the
+        // eval clips speech never peaked below 0.43, even 20 dB down; silence and
+        // synthetic noise never above 0.15.
+        var params = whisper_vad_default_params()
+        params.threshold = 0.35
+        params.min_speech_duration_ms = 100
+        let segments = samples.withUnsafeBufferPointer {
+            whisper_vad_segments_from_samples(vad, params, $0.baseAddress, Int32($0.count))
+        }
+        guard let segments else {
+            Self.log.error("VAD detection failed; gate open")
+            return nil
+        }
+        defer { whisper_vad_free_segments(segments) }
+        let found = whisper_vad_segments_n_segments(segments)
+        // Numbers only, never audio or text: enough to tell why a take was let through.
+        let probs = whisper_vad_probs(vad)
+        let peak = (0..<Int(whisper_vad_n_probs(vad))).reduce(Float(0)) { max($0, probs?[$1] ?? 0) }
+        let seconds = Double(samples.count) / 16_000
+        Self.log.notice("""
+            \(seconds, format: .fixed(precision: 1), privacy: .public)s, \
+            \(found, privacy: .public) segment(s), \
+            peak p=\(peak, format: .fixed(precision: 2), privacy: .public)
+            """)
+        return found > 0
     }
 
     // MARK: Prompt
@@ -215,5 +290,6 @@ actor WhisperEngine {
 
     deinit {
         if let ctx { whisper_free(ctx) }
+        if let vad { whisper_vad_free(vad) }
     }
 }
