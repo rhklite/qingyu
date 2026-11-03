@@ -272,6 +272,8 @@ Mic icon in the menu bar → status, hotkey hint, and:
 | `playSounds` | `true` | soft start/stop chimes |
 | `customVocabulary` | `[]` | proper nouns; biases whisper + cleanup |
 | `simplifiedChinese` | `true` | traditional → simplified characters on Chinese output |
+| `vad` | `true` | drop long pauses with Silero VAD; needs `ggml-silero-v6.2.0.bin` in the models folder (experimental branch) |
+| `vadMinSeconds` | `15` | clips shorter than this skip VAD |
 
 Prefer a modifier key for `pttKeyCode` — a normal key would type its character while held.
 You can also set it live via **Change Push-to-Talk Key…**.
@@ -297,6 +299,12 @@ A setting is a `+`-joined list of changes on top of the original decoder: `natur
 (traditional → simplified). On 160 clips (135 English, 25 Chinese, MacBook mic),
 `natural+zh` took the error rate from 9.09% to 8.64% (16 clips changed: 10 better,
 6 worse) at the same speed; both are on in the app. Experiments that showed no gain live on their own `feature/*` branches.
+
+**This branch: VAD on long clips** (`vad` / `vad15`: all clips / clips over 15 s).
+whisper.cpp's Silero VAD cuts pauses of 800 ms or more before decoding. On clips over
+15 s: error rate 9.09% → 8.89% (12 clips changed: 6 better, 6 worse); on every clip, no
+change (18 better, 19 worse). The test clips are push-to-talk with few long pauses, so
+it is unproven either way and not on main.
 
 ## Layout
 

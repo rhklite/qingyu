@@ -30,7 +30,7 @@ swiftc -O -parse-as-library \
     -framework AVFoundation -framework CoreAudio -framework AudioToolbox \
     -o .build/qingyu-eval
 
-SETTINGS="${1:-baseline,natural,zh,natural+zh}"
+SETTINGS="${1:-baseline,natural+zh,natural+zh+vad15}"
 shift || true
 OUT="$HOME/.config/qingyu/eval/hyps.jsonl"
 .build/qingyu-eval --settings "$SETTINGS" --out "$OUT" "$@" 2>"$HOME/.config/qingyu/eval/runner.log"

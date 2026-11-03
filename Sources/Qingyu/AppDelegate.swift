@@ -25,6 +25,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var state: State = .loading { didSet { updateStatusIcon(); updateSpeechBar() } }
 
     private var recordingStart = Date.distantPast
+    /// Silero VAD weights in the models folder (scripts/install.sh fetches them); VAD is
+    /// skipped while the file is missing.
+    static let vadModelFile = "ggml-silero-v6.2.0.bin"
     private var lastTranscript = ""
     private var statusMessage: String?
     private var ollamaReachable = false
@@ -424,6 +427,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 options.vocabulary = cfg.customVocabulary
                 options.naturalPrompt = true
                 options.simplifiedChinese = cfg.simplifiedChinese
+                if cfg.vad {
+                    options.vadModelPath = Config.modelsDir.appendingPathComponent(Self.vadModelFile).path
+                    options.vadMinSeconds = cfg.vadMinSeconds
+                }
                 let raw = try await self.engine.transcribe(samples: audio, options: options)
 
                 var result = raw

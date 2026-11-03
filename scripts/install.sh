@@ -75,6 +75,18 @@ fi
 say "Downloading whisper model: $MODEL (~547 MB)"
 bash scripts/download_model.sh "$MODEL"
 
+# --- Voice activity model (optional, ~1 MB) ----------------------------------------
+# Lets 轻语 drop long pauses in hands-free dictation; without it VAD is skipped.
+VAD_FILE="$CONFIG_DIR/models/ggml-silero-v6.2.0.bin"
+if [[ ! -f "$VAD_FILE" ]]; then
+    if curl -sfL -o "$VAD_FILE.part" https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin; then
+        mv "$VAD_FILE.part" "$VAD_FILE"
+    else
+        rm -f "$VAD_FILE.part"
+        echo "VAD model download failed — continuing without it." >&2
+    fi
+fi
+
 # --- Build + install the app -------------------------------------------------------
 say "Building + installing 轻语.app"
 bash scripts/setup_signing.sh

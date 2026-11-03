@@ -29,6 +29,10 @@ struct DecodeOptions {
     /// Traditional → simplified characters on zh output. (A simplified-Chinese sentence
     /// in the prompt was tried too: it sent whisper into a repetition loop in the eval.)
     var simplifiedChinese = false
+    /// Silero VAD model; nil = no voice activity detection.
+    var vadModelPath: String?
+    /// Run VAD only on clips at least this long.
+    var vadMinSeconds = 0.0
 }
 
 /// Serialized wrapper around a whisper.cpp context. whisper contexts are not
@@ -127,6 +131,21 @@ actor WhisperEngine {
             params.initial_prompt = UnsafePointer(promptC)
         }
         defer { if let promptC { free(promptC) } }
+
+        // VAD drops the pauses where whisper tends to invent text. Short push-to-talk
+        // clips have none worth dropping, so it only runs past vadMinSeconds.
+        var vadC: UnsafeMutablePointer<CChar>?
+        if let path = o.vadModelPath, Double(rawSamples.count) / 16_000 >= o.vadMinSeconds,
+           FileManager.default.fileExists(atPath: path) {
+            vadC = strdup(path)
+            params.vad = true
+            params.vad_model_path = UnsafePointer(vadC)
+            // The defaults split on any 100 ms gap and pad segments by only 30 ms, which
+            // clips word onsets in dictation. Only cut real pauses; keep generous padding.
+            params.vad_params.min_silence_duration_ms = 800
+            params.vad_params.speech_pad_ms = 200
+        }
+        defer { if let vadC { free(vadC) } }
 
         let ret = samples.withUnsafeBufferPointer { buf in
             whisper_full(ctx, params, buf.baseAddress, Int32(buf.count))

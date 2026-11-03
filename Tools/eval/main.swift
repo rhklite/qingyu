@@ -51,6 +51,7 @@ struct Eval {
         let manifest = arg("--manifest", home + "/.config/qingyu/eval/manifest.jsonl")
         let out = arg("--out", home + "/.config/qingyu/eval/hyps.jsonl")
         let model = arg("--model", cfg["modelPath"] as? String ?? "")
+        let vadModel = arg("--vad-model", home + "/.config/qingyu/models/ggml-silero-v6.2.0.bin")
         let settings = arg("--settings", "baseline").split(separator: ",").map(String.init)
         let limit = Int(arg("--limit", "0")) ?? 0
 
@@ -83,6 +84,8 @@ struct Eval {
                     case "baseline": break
                     case "natural": o.naturalPrompt = true
                     case "zh": o.simplifiedChinese = true
+                    case "vad": o.vadModelPath = vadModel; o.vadMinSeconds = 0
+                    case "vad15": o.vadModelPath = vadModel; o.vadMinSeconds = 15
                     default: fatalError("unknown change '\(change)' in setting '\(setting)'")
                     }
                 }
