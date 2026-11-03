@@ -424,6 +424,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 options.vocabulary = cfg.customVocabulary
                 options.naturalPrompt = true
                 options.simplifiedChinese = cfg.simplifiedChinese
+                options.beamSize = max(1, cfg.beamSize)
                 let raw = try await self.engine.transcribe(samples: audio, options: options)
 
                 var result = raw

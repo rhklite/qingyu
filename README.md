@@ -272,6 +272,7 @@ Mic icon in the menu bar → status, hotkey hint, and:
 | `playSounds` | `true` | soft start/stop chimes |
 | `customVocabulary` | `[]` | proper nouns; biases whisper + cleanup |
 | `simplifiedChinese` | `true` | traditional → simplified characters on Chinese output |
+| `beamSize` | `5` | `1` = greedy decoding; more = beam search (experimental branch) |
 
 Prefer a modifier key for `pttKeyCode` — a normal key would type its character while held.
 You can also set it live via **Change Push-to-Talk Key…**.
@@ -297,6 +298,11 @@ A setting is a `+`-joined list of changes on top of the original decoder: `natur
 (traditional → simplified). On 160 clips (135 English, 25 Chinese, MacBook mic),
 `natural+zh` took the error rate from 9.09% to 8.64% (16 clips changed: 10 better,
 6 worse) at the same speed; both are on in the app. Experiments that showed no gain live on their own `feature/*` branches.
+
+**This branch: beam search** (`beam5`). whisper keeps 5 candidate transcripts instead of
+taking the top token each step. Measured against greedy: error rate 9.09% → 9.04%
+(22 clips changed: 12 better, 10 worse), about 0.03 s slower per clip — no clear gain,
+so it is not on main.
 
 ## Layout
 

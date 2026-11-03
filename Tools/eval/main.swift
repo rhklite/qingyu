@@ -83,6 +83,7 @@ struct Eval {
                     case "baseline": break
                     case "natural": o.naturalPrompt = true
                     case "zh": o.simplifiedChinese = true
+                    case "beam5": o.beamSize = 5
                     default: fatalError("unknown change '\(change)' in setting '\(setting)'")
                     }
                 }

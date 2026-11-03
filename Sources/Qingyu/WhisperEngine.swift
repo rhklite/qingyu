@@ -29,6 +29,8 @@ struct DecodeOptions {
     /// Traditional → simplified characters on zh output. (A simplified-Chinese sentence
     /// in the prompt was tried too: it sent whisper into a repetition loop in the eval.)
     var simplifiedChinese = false
+    /// 1 = greedy; more = beam search with that many beams.
+    var beamSize = 1
 }
 
 /// Serialized wrapper around a whisper.cpp context. whisper contexts are not
@@ -103,7 +105,9 @@ actor WhisperEngine {
             effectiveLanguage = o.language
         }
 
-        var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
+        var params = whisper_full_default_params(
+            o.beamSize > 1 ? WHISPER_SAMPLING_BEAM_SEARCH : WHISPER_SAMPLING_GREEDY)
+        if o.beamSize > 1 { params.beam_search.beam_size = Int32(o.beamSize) }
         let threads = max(1, min(8, ProcessInfo.processInfo.processorCount - 2))
         params.n_threads = Int32(threads)
         params.print_realtime = false
