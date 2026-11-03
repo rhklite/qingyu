@@ -26,7 +26,10 @@ enum SyntheticEvent {
 /// default Right-Option, keycode 61) is recommended so the key never types a
 /// character into the focused app while held.
 final class HotKeyMonitor {
-    enum Key { case down, up }
+    /// `.chord`: another key went down while a modifier talk key was held, so this press
+    /// is a shortcut (⌘[ from a mouse's Back button, ⌘C), not push-to-talk. Sent at most
+    /// once per press, between its .down and .up.
+    enum Key { case down, up, chord }
 
     /// Push-to-talk can be an extra mouse button instead of a key. Those are stored as
     /// this base plus the button number, so one config field still covers both and old
@@ -42,6 +45,9 @@ final class HotKeyMonitor {
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
     private var isDown = false
+    private var chorded = false
+
+    private static let modifierKeyCodes: Set<Int64> = [54, 55, 56, 58, 59, 60, 61, 62]
 
     init(keyCode: Int, onEvent: @escaping (Key) -> Void) {
         self.keyCode = Int64(keyCode)
@@ -116,8 +122,9 @@ final class HotKeyMonitor {
     /// filtered as a repeat of one that never ended.
     private func forgetKeyState() { isDown = false }
 
-    // Runs on the main run loop (the tap source is attached there).
-    private func handle(type: CGEventType, event: CGEvent) {
+    // Runs on the main run loop (the tap source is attached there). Not private so a
+    // test can drive it with hand-built events.
+    func handle(type: CGEventType, event: CGEvent) {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             forgetKeyState()
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
@@ -138,7 +145,14 @@ final class HotKeyMonitor {
             return
         }
 
-        guard event.getIntegerValueField(.keyboardEventKeycode) == keyCode else { return }
+        let code = event.getIntegerValueField(.keyboardEventKeycode)
+        if type == .keyDown, code != keyCode, isDown, !chorded,
+           Self.modifierKeyCodes.contains(keyCode) {
+            chorded = true
+            onEvent(.chord)
+            return
+        }
+        guard code == keyCode else { return }
 
         switch type {
         case .flagsChanged: transition(to: modifierIsDown(event))
@@ -162,6 +176,7 @@ final class HotKeyMonitor {
     private func transition(to down: Bool) {
         guard down != isDown else { return }   // ignore key-repeat and no-op flag changes
         isDown = down
+        if down { chorded = false }
         onEvent(down ? .down : .up)
     }
 }

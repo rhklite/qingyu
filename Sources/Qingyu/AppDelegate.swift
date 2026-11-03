@@ -329,6 +329,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func handleHotkey(_ key: HotKeyMonitor.Key) {
+        if key == .chord { discardChordedPress(); return }
         switch config.hotkeyMode {
         case "toggle":
             guard key == .down else { return }
@@ -338,6 +339,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         default:   // "hold"
             if key == .down { startDictation() } else { stopDictation() }
         }
+    }
+
+    /// The talk key turned out to be the modifier of a shortcut. Throw away the take this
+    /// press started, unheard, and keep the press out of double-tap counting: a mouse
+    /// whose Back button sends ⌘[ used to latch hands-free listening on two clicks.
+    ///
+    /// Only a take this press started can still be listening here: a press that ended a
+    /// take has already moved it on to transcribing.
+    private func discardChordedPress() {
+        lastTapTime = .distantPast
+        // A long hold that ends in a shortcut was dictation first; let it finish normally.
+        if state == .listening, Date().timeIntervalSince(recordingStart) >= 1.0 { return }
+        if config.hotkeyMode == "hybrid" { ignoreNextUp = true }
+        guard state == .listening else { return }
+        ducker.dictating = false
+        _ = recorder.stop()
+        state = .idle
+        ActivityLog.shared.record("talk key used in a shortcut — take discarded")
     }
 
     /// Hold to talk; double-tap to lock into hands-free (toggle), then a single press stops.
@@ -375,6 +394,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 lastTapTime = .distantPast
                 stopDictation()                  // real hold → normal push-to-talk stop
             }
+
+        case .chord:
+            break                                // handled in handleHotkey
         }
     }
 
