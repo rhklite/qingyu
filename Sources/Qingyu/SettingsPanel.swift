@@ -471,6 +471,9 @@ final class SettingsPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate 
 
     /// Re-fit after a control changed how tall the stack wants to be. Capped, because
     /// past a point the window has to scroll rather than grow.
+    ///
+    /// Measures the stack, never `window.contentView`: that is the scroll view, whose
+    /// fitting height is ~0, and sizing to it collapses the window to its title bar.
     private func resize() {
         guard let stack = contentStack else { return }
         let height = min(stack.fittingSize.height, 720)
@@ -652,8 +655,7 @@ final class SettingsPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate 
         config.level = level
         markEdited("level")
         levelBlurb.stringValue = level.blurb
-        window.setContentSize(NSSize(width: 520,
-                                     height: (window.contentView?.fittingSize.height ?? 560)))
+        resize()
     }
 
     /// Explain the pick, and say plainly when the OS is too old rather than leaving
@@ -673,8 +675,7 @@ final class SettingsPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate 
         config.ducking = setting
         markEdited("ducking")
         duckBlurb.stringValue = duckDescription
-        window.setContentSize(NSSize(width: 520,
-                                     height: (window.contentView?.fittingSize.height ?? 560)))
+        resize()
     }
 
     private func refreshModelLabel() {
