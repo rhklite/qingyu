@@ -30,6 +30,7 @@ struct Config: Codable {
     var remapEnabled: Bool         // send Return when the remap mouse button is pressed
     var remapButtonCode: Int       // HotKeyMonitor mouse code (1000 + button number)
     var autoCheckUpdates: Bool     // let Sparkle look for a new version on launch
+    var simplifiedChinese: Bool    // write Chinese in simplified characters
 
     static let homeDir = FileManager.default.homeDirectoryForCurrentUser
     static let configDir = homeDir.appendingPathComponent(".config/qingyu")
@@ -82,7 +83,8 @@ struct Config: Codable {
             modelsDir: nil,
             remapEnabled: false,          // off until the user picks a button
             remapButtonCode: HotKeyMonitor.mouseCodeBase + 3,   // "mouse button 4"
-            autoCheckUpdates: true
+            autoCheckUpdates: true,
+            simplifiedChinese: true
         )
     }
 
@@ -167,5 +169,6 @@ struct Config: Codable {
         if let v = obj["remapEnabled"] as? Bool { remapEnabled = v }
         if let v = obj["remapButtonCode"] as? Int { remapButtonCode = v }
         if let v = obj["autoCheckUpdates"] as? Bool { autoCheckUpdates = v }
+        if let v = obj["simplifiedChinese"] as? Bool { simplifiedChinese = v }
     }
 }

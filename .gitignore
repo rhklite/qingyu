@@ -16,3 +16,6 @@ third_party/whisper.cpp/build-*/
 
 # Editor
 .vscode/
+
+# Python
+__pycache__/

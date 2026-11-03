@@ -418,9 +418,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Task { [weak self] in
             guard let self else { return }
             do {
-                let raw = try await self.engine.transcribe(
-                    samples: audio, language: cfg.language,
-                    detectLanguages: cfg.detectLanguages, vocabulary: cfg.customVocabulary)
+                var options = DecodeOptions()
+                options.language = cfg.language
+                options.detectLanguages = cfg.detectLanguages
+                options.vocabulary = cfg.customVocabulary
+                options.naturalPrompt = true
+                options.simplifiedChinese = cfg.simplifiedChinese
+                let raw = try await self.engine.transcribe(samples: audio, options: options)
 
                 var result = raw
                 // Spoken punctuation first: it's deterministic, and doing it before the

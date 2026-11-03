@@ -271,9 +271,32 @@ Mic icon in the menu bar → status, hotkey hint, and:
 | `injectionMode` | `paste` | `paste` (⌘V) or `type` (Unicode events) |
 | `playSounds` | `true` | soft start/stop chimes |
 | `customVocabulary` | `[]` | proper nouns; biases whisper + cleanup |
+| `simplifiedChinese` | `true` | traditional → simplified characters on Chinese output |
 
 Prefer a modifier key for `pttKeyCode` — a normal key would type its character while held.
 You can also set it live via **Change Push-to-Talk Key…**.
+
+## Measuring accuracy
+
+`scripts/eval/` replays real dictations through the app's own `WhisperEngine` and
+scores each decoder setting, so a change is kept only if it helps on your voice.
+
+```bash
+python3 -I scripts/eval/extract_wispr.py   # test set from Wispr Flow's local history
+scripts/eval/run_eval.sh baseline,natural+zh
+```
+
+The test set comes from Wispr Flow's database (read-only): the clips it still keeps
+audio for, with its raw transcript as the reference. Clips go to
+`~/.config/qingyu/eval`, outside the repo. The score is one error rate over English
+words and Chinese characters, ignoring case, punctuation and filler sounds; the
+reference is Wispr's transcript, so it measures agreement with Wispr.
+
+A setting is a `+`-joined list of changes on top of the original decoder: `natural`
+(vocabulary as a bare term list fitted to whisper's 224-token prompt budget) and `zh`
+(traditional → simplified). On 160 clips (135 English, 25 Chinese, MacBook mic),
+`natural+zh` took the error rate from 9.09% to 8.64% (16 clips changed: 10 better,
+6 worse) at the same speed; both are on in the app. Experiments that showed no gain live on their own `feature/*` branches.
 
 ## Layout
 

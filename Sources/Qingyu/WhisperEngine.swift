@@ -17,6 +17,20 @@ enum WhisperError: Error, LocalizedError {
     }
 }
 
+/// Everything that shapes one transcription. The defaults reproduce the original
+/// decoder ("Vocabulary:" prompt, script as whisper wrote it) so that scripts/eval
+/// can measure each change against what shipped.
+struct DecodeOptions {
+    var language = "auto"
+    var detectLanguages: [String] = []
+    var vocabulary: [String] = []
+    /// Vocabulary as a plain term list fitted to whisper's prompt budget.
+    var naturalPrompt = false
+    /// Traditional → simplified characters on zh output. (A simplified-Chinese sentence
+    /// in the prompt was tried too: it sent whisper into a repetition loop in the eval.)
+    var simplifiedChinese = false
+}
+
 /// Serialized wrapper around a whisper.cpp context. whisper contexts are not
 /// thread-safe, so the actor guarantees one call at a time.
 actor WhisperEngine {
@@ -74,20 +88,19 @@ actor WhisperEngine {
         return out
     }
 
-    func transcribe(samples rawSamples: [Float], language: String, detectLanguages: [String],
-                    vocabulary: [String]) throws -> String {
+    func transcribe(samples rawSamples: [Float], options o: DecodeOptions) throws -> String {
         guard let ctx else { throw WhisperError.notLoaded }
         let samples = Self.withLeadIn(rawSamples)
 
         // Effective language: 1 selection = pin it; 2+ = restrict detection to that
         // subset (picks the most probable among them); none = the configured language.
         let effectiveLanguage: String
-        if detectLanguages.count == 1 {
-            effectiveLanguage = detectLanguages[0]
-        } else if detectLanguages.count >= 2 {
-            effectiveLanguage = detectLanguage(samples: samples, allowed: detectLanguages) ?? language
+        if o.detectLanguages.count == 1 {
+            effectiveLanguage = o.detectLanguages[0]
+        } else if o.detectLanguages.count >= 2 {
+            effectiveLanguage = detectLanguage(samples: samples, allowed: o.detectLanguages) ?? o.language
         } else {
-            effectiveLanguage = language
+            effectiveLanguage = o.language
         }
 
         var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
@@ -109,8 +122,8 @@ actor WhisperEngine {
         params.language = UnsafePointer(langC)
 
         var promptC: UnsafeMutablePointer<CChar>?
-        if !vocabulary.isEmpty {
-            promptC = strdup("Vocabulary: " + vocabulary.joined(separator: ", ") + ".")
+        if let prompt = buildPrompt(o) {
+            promptC = strdup(prompt)
             params.initial_prompt = UnsafePointer(promptC)
         }
         defer { if let promptC { free(promptC) } }
@@ -126,7 +139,49 @@ actor WhisperEngine {
                 text += String(cString: seg)
             }
         }
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // whisper often writes Mandarin in traditional characters. ICU's transform leaves
+        // Latin text alone, so mixed Chinese/English survives intact.
+        if o.simplifiedChinese {
+            let used = effectiveLanguage != "auto"
+                ? effectiveLanguage
+                : whisper_lang_str(whisper_full_lang_id(ctx)).map { String(cString: $0) } ?? ""
+            if used == "zh" {
+                text = text.applyingTransform(StringTransform("Hant-Hans"), reverse: false) ?? text
+            }
+        }
+        return text
+    }
+
+    // MARK: Prompt
+
+    /// whisper.cpp keeps at most n_text_ctx/2 (224) prompt tokens and silently drops
+    /// the oldest beyond that; stay under it so the trimming is ours, not whisper's.
+    private static let maxPromptTokens = 220
+
+    private func tokenCount(_ text: String) -> Int {
+        guard let ctx, !text.isEmpty else { return 0 }
+        var tokens = [whisper_token](repeating: 0, count: 512)
+        let n = whisper_tokenize(ctx, text, &tokens, Int32(tokens.count))
+        return Int(n < 0 ? -n : n)
+    }
+
+    /// The initial prompt: the personal vocabulary, which biases whisper toward those
+    /// spellings.
+    private func buildPrompt(_ o: DecodeOptions) -> String? {
+        guard !o.vocabulary.isEmpty else { return nil }
+        // Original behaviour, kept exactly so it can be measured against.
+        guard o.naturalPrompt else { return "Vocabulary: " + o.vocabulary.joined(separator: ", ") + "." }
+
+        // A bare term list, filled in dictionary order until the budget runs out —
+        // rather than letting whisper cut whatever came first.
+        var terms: [String] = []
+        for term in o.vocabulary {
+            if tokenCount((terms + [term]).joined(separator: ", ") + ".") > Self.maxPromptTokens { break }
+            terms.append(term)
+        }
+        return terms.isEmpty ? nil : terms.joined(separator: ", ") + "."
     }
 
     /// Run whisper's language detector and return the most probable language among
