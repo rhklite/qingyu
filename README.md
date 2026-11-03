@@ -272,6 +272,7 @@ Mic icon in the menu bar → status, hotkey hint, and:
 | `playSounds` | `true` | soft start/stop chimes |
 | `customVocabulary` | `[]` | proper nouns; biases whisper + cleanup |
 | `simplifiedChinese` | `true` | traditional → simplified characters on Chinese output |
+| `screenContext` | `true` | prime whisper with the text before the cursor (experimental branch) |
 
 Prefer a modifier key for `pttKeyCode` — a normal key would type its character while held.
 You can also set it live via **Change Push-to-Talk Key…**.
@@ -297,6 +298,13 @@ A setting is a `+`-joined list of changes on top of the original decoder: `natur
 (traditional → simplified). On 160 clips (135 English, 25 Chinese, MacBook mic),
 `natural+zh` took the error rate from 9.09% to 8.64% (16 clips changed: 10 better,
 6 worse) at the same speed; both are on in the app. Experiments that showed no gain live on their own `feature/*` branches.
+
+**This branch: screen context** (`context`). When dictation starts, `ScreenContext`
+reads the text before the cursor through Accessibility, and whisper gets its last
+~100 tokens after the vocabulary, with on-screen terms ranked first. Replayed with the
+cursor text Wispr saved for each clip: on top of main's settings it scored 8.84% vs
+8.64% without it; alone, 9.14% vs 9.09% (10 clips better, 8 worse). No gain, so it is
+not on main. Inside the app it is untested.
 
 ## Layout
 

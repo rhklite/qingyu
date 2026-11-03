@@ -25,6 +25,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var state: State = .loading { didSet { updateStatusIcon(); updateSpeechBar() } }
 
     private var recordingStart = Date.distantPast
+    /// Text before the cursor, read when dictation starts (see ScreenContext).
+    private var screenContext: Task<String, Never>?
     private var lastTranscript = ""
     private var statusMessage: String?
     private var ollamaReachable = false
@@ -369,6 +371,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // chime. Capture first; feedback is still instant to a human either way.
         recordingStart = Date()
         recorder.start()
+        // Read it now, while the field the user is dictating into still has focus.
+        // Accessibility calls block, so keep them off the main actor.
+        screenContext = config.screenContext
+            ? Task.detached(priority: .userInitiated) { ScreenContext.textBeforeCursor() }
+            : nil
 
         if config.playSounds { Cue.start() }   // instant audio + visual feedback
         jargonToast.hide()                     // the speech bar wants that spot back
@@ -415,6 +422,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         state = .thinking
         let cfg = config
         let audio = cfg.boostAudio ? AudioRecorder.normalizedForRecognition(samples) : samples
+        let contextTask = screenContext
+        screenContext = nil
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -422,6 +431,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 options.language = cfg.language
                 options.detectLanguages = cfg.detectLanguages
                 options.vocabulary = cfg.customVocabulary
+                options.context = await contextTask?.value ?? ""
                 options.naturalPrompt = true
                 options.simplifiedChinese = cfg.simplifiedChinese
                 let raw = try await self.engine.transcribe(samples: audio, options: options)

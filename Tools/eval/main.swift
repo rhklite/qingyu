@@ -13,6 +13,7 @@ struct Clip: Decodable {
     let wav: String
     let ref: String
     let lang: String
+    let before_text: String
 }
 
 /// 16-bit PCM mono WAV → floats in -1…1. Walks the chunks rather than assuming a
@@ -83,6 +84,7 @@ struct Eval {
                     case "baseline": break
                     case "natural": o.naturalPrompt = true
                     case "zh": o.simplifiedChinese = true
+                    case "context": o.context = clip.before_text
                     default: fatalError("unknown change '\(change)' in setting '\(setting)'")
                     }
                 }

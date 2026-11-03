@@ -24,6 +24,8 @@ struct DecodeOptions {
     var language = "auto"
     var detectLanguages: [String] = []
     var vocabulary: [String] = []
+    /// Text before the cursor when dictation started; "" when unavailable or off.
+    var context = ""
     /// Vocabulary as a plain term list fitted to whisper's prompt budget.
     var naturalPrompt = false
     /// Traditional → simplified characters on zh output. (A simplified-Chinese sentence
@@ -159,6 +161,8 @@ actor WhisperEngine {
     /// whisper.cpp keeps at most n_text_ctx/2 (224) prompt tokens and silently drops
     /// the oldest beyond that; stay under it so the trimming is ours, not whisper's.
     private static let maxPromptTokens = 220
+    /// Share of the budget the screen context may take before vocabulary gets the rest.
+    private static let maxContextTokens = 100
 
     private func tokenCount(_ text: String) -> Int {
         guard let ctx, !text.isEmpty else { return 0 }
@@ -167,21 +171,53 @@ actor WhisperEngine {
         return Int(n < 0 ? -n : n)
     }
 
-    /// The initial prompt: the personal vocabulary, which biases whisper toward those
-    /// spellings.
+    /// The initial prompt: the vocabulary, then the text before the cursor — last,
+    /// because whisper reads the prompt as the words spoken just before this clip.
     private func buildPrompt(_ o: DecodeOptions) -> String? {
-        guard !o.vocabulary.isEmpty else { return nil }
-        // Original behaviour, kept exactly so it can be measured against.
-        guard o.naturalPrompt else { return "Vocabulary: " + o.vocabulary.joined(separator: ", ") + "." }
+        let context = o.context.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        // A bare term list, filled in dictionary order until the budget runs out —
-        // rather than letting whisper cut whatever came first.
+        // Original behaviour, kept exactly so it can be measured against.
+        if !o.naturalPrompt && context.isEmpty {
+            return o.vocabulary.isEmpty ? nil : "Vocabulary: " + o.vocabulary.joined(separator: ", ") + "."
+        }
+
+        var budget = Self.maxPromptTokens
+        let contextTail = trimmedToTokens(context, max: min(Self.maxContextTokens, budget))
+        budget -= tokenCount(contextTail)
+
+        // Terms already on screen first, then the dictionary in its own order, until the
+        // budget runs out — rather than letting whisper cut whatever came first.
+        let lowered = context.lowercased()
+        let ranked = o.vocabulary.filter { lowered.contains($0.lowercased()) }
+            + o.vocabulary.filter { !lowered.contains($0.lowercased()) }
+        func render(_ terms: [String]) -> String {
+            o.naturalPrompt ? terms.joined(separator: ", ") + "."
+                            : "Vocabulary: " + terms.joined(separator: ", ") + "."
+        }
         var terms: [String] = []
-        for term in o.vocabulary {
-            if tokenCount((terms + [term]).joined(separator: ", ") + ".") > Self.maxPromptTokens { break }
+        for term in ranked {
+            if tokenCount(render(terms + [term])) > budget { break }
             terms.append(term)
         }
-        return terms.isEmpty ? nil : terms.joined(separator: ", ") + "."
+
+        let prompt = [terms.isEmpty ? "" : render(terms), contextTail]
+            .filter { !$0.isEmpty }.joined(separator: " ")
+        return prompt.isEmpty ? nil : prompt
+    }
+
+    /// The end of `text` that fits in `max` tokens, cut at a word boundary.
+    private func trimmedToTokens(_ text: String, max: Int) -> String {
+        guard max > 0, !text.isEmpty else { return "" }
+        var tail = Substring(text.suffix(800))
+        while !tail.isEmpty, tokenCount(String(tail)) > max {
+            tail = tail.dropFirst(Swift.max(1, tail.count / 8))
+        }
+        // Drop a half-cut leading word; Chinese has no spaces, so only look a little way in.
+        if tail.startIndex != text.startIndex,
+           let space = tail.prefix(20).firstIndex(where: { $0.isWhitespace }) {
+            tail = tail[tail.index(after: space)...]
+        }
+        return String(tail)
     }
 
     /// Run whisper's language detector and return the most probable language among
