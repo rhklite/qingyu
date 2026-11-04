@@ -226,7 +226,7 @@ if git diff --cached --quiet; then
 else
     git commit -m "Release $VERSION
 
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 fi
 git push origin "$BRANCH"
 KEEP_BUMP=1
